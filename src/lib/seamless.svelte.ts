@@ -1,6 +1,7 @@
 import { parse, stringify } from 'yaml';
 import { mergeStackings, normalizeStackings, stackingKey } from './stackings';
 import { appState } from './state.svelte';
+import { loadSeamlessClient } from './seamless-client';
 import {
   deferredWriteIsCurrent,
   deriveProjectStage,
@@ -1607,14 +1608,12 @@ export function connectToSeamless(connect: ShareConnector): void {
   websocketPoll = setInterval(watchShareConnection, 250);
 }
 
-if (typeof window === 'undefined' || !window.connect_seamless) {
+if (typeof window === 'undefined') {
   seamlessState.status = 'unavailable';
 } else {
-  try {
-    connectToSeamless(window.connect_seamless);
-  } catch {
+  void loadSeamlessClient().then(connectToSeamless).catch(() => {
     seamlessState.status = 'unavailable';
-  }
+  });
 }
 
 export function setSharedCif(cif: string): void {

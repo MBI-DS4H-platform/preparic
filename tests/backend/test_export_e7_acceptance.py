@@ -13,7 +13,7 @@ import yaml
 
 import export_snapshot
 import export_tree
-from test_export_snapshot import _attached_helper_modules, _inputs  # noqa: F401
+from test_export_snapshot import _attached_helper_modules, _inputs, _inputs_with_two_stacking_classes  # noqa: F401
 
 
 def _build(inputs):
@@ -236,3 +236,31 @@ def test_e7_x7_view_and_local_consent_do_not_change_archive_identity():
     current, current_tree, _ = _build(inputs)
     assert current["digest"] == admission["digest"]
     assert current_tree == tree
+
+
+@pytest.mark.parametrize("all_disabled", [False, True])
+def test_stage6_exclusions_reach_rendered_export_and_old_admission_is_rejected(all_disabled):
+    inputs = _inputs_with_two_stacking_classes()
+    before, _, _ = _build(inputs)
+    rows = inputs["gaussian_classes"]["rows"]
+    disabled = {row["key"] for row in (rows if all_disabled else rows[:1])}
+    for row in rows:
+        if row["key"] in disabled:
+            row["excluded"] = True
+    inputs["gaussian_validation"]["echo"]["classes"] = deepcopy(rows)
+    inputs["gaussian_validation"]["rows"] = [
+        row for row in inputs["gaussian_validation"]["rows"] if row["key"] not in disabled]
+    admission, tree, manifest = _build(inputs)
+    assert admission["digest"] != before["digest"]
+    assert {row["key"] for row in manifest["class_table"] if row.get("excluded")} == disabled
+    assert not any(w["kind"] == "gaussian" and w["address"] in disabled
+                   for w in admission["warnings"])
+    anchor_actions = [action for action in _actions(tree).values() if action["action"] == "anchor"]
+    if all_disabled:
+        assert anchor_actions == []
+        assert all(run["anchors"] == [] for run in manifest["handoff"]["runs"])
+    else:
+        assert anchor_actions
+        assert {action["resid"] for action in anchor_actions} == {214}
+    with pytest.raises(export_snapshot.ExportNotReady, match="digest|admission|snapshot"):
+        export_tree.build_tree(inputs, before)

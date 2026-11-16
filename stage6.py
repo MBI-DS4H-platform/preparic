@@ -557,11 +557,14 @@ def validate_gaussian_classes(marker: Any, model_json: Any, selection: Any, gaus
             raise ValueError("A Gaussian class row is malformed.")
         if row["rrm"] not in {50, 60, 70, 80, 90, 95}:
             raise ValueError(f"Gaussian class {row.get('key')!r} has an invalid RRM value.")
+        if "excluded" in row and type(row["excluded"]) is not bool:
+            raise ValueError("Gaussian class exclusions must be boolean.")
+        fields = set(row) - {"excluded"}
         if row["rrm"] in {90, 95}:
-            if set(row) != {"key", "rrm", "tilt30", "disp45"} \
+            if fields != {"key", "rrm", "tilt30", "disp45"} \
                 or type(row.get("tilt30")) is not bool or type(row.get("disp45")) is not bool:
                 raise ValueError("RRM-90/95 rows require boolean tilt30 and disp45 flags.")
-        elif set(row) != {"key", "rrm"}:
+        elif fields != {"key", "rrm"}:
             raise ValueError("RRM-50/60/70/80 rows cannot contain prefilter flags.")
         if _class_filter_name(row) not in names or _class_filter_name(row) not in spec["thresholds"]:
             raise ValueError(f"Gaussian class row {row['key']!r} maps to an illegal filter name.")
@@ -823,6 +826,8 @@ def merge_gaussian_validation(
     priority = {"green": 0, "implied": 1, "amber": 2, "red": 3, "error": 4}
     merged_rows = []
     for class_row in class_rows:
+        if class_row.get("excluded") is True:
+            continue
         key = class_row["key"]
         filter_name = _class_filter_name(class_row)
         if filter_name not in names:

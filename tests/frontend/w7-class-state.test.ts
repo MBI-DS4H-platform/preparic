@@ -70,3 +70,17 @@ test('W7 deferred class write is invalid after Back, remote revision or reconnec
   expect(deferredWriteIsCurrent({ ...guard, currentConnection: 2 })).toBe(false);
   expect(deferredWriteIsCurrent({ ...guard, live: false })).toBe(false);
 });
+
+
+test.each([50, 90])('stage-6 exclusions are optional strict booleans for RRM-%s', rrm => {
+  for (const excluded of [true, false]) {
+    const value = classes(rrm);
+    value.rows[0].excluded = excluded;
+    expect(markerIsWellFormed('gaussian_classes', value)).toBe(true);
+  }
+  for (const excluded of [null, 0, 1, 'false']) {
+    const value = classes(rrm);
+    value.rows[0].excluded = excluded;
+    expect(markerIsWellFormed('gaussian_classes', value)).toBe(false);
+  }
+});

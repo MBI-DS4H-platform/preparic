@@ -200,6 +200,10 @@ def _valid_decision(name: str, value: object) -> bool:
                 or row.get("rrm") not in (50, 60, 70, 80, 90, 95) or type(row.get("rrm")) is not int:
                 return False
             expected = {"key", "rrm"} if row["rrm"] < 90 else {"key", "rrm", "tilt30", "disp45"}
+            if "excluded" in row:
+                if type(row["excluded"]) is not bool:
+                    return False
+                expected.add("excluded")
             if set(row) != expected or (row["rrm"] >= 90 and (type(row["tilt30"]) is not bool or type(row["disp45"]) is not bool)):
                 return False
             keys.append(row["key"])

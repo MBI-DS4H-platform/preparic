@@ -515,3 +515,32 @@ def test_w8b_reference_validation_transformer_is_removed():
     assert "context.validate_refe_anchors" not in source
     assert "context.refe_validation" not in source
     assert "refe-validation.json" not in source
+
+
+@pytest.mark.parametrize("rrm", [50, 90])
+def test_stage6_exclusion_is_validated_without_allowing_stage3_disabled_stackings(rrm):
+    marker = class_marker(rrm=rrm)
+    marker["rows"][0]["excluded"] = True
+    selection = tiny_case()[2]
+    stage6.validate_gaussian_classes(marker, MODEL_JSON, selection, gaussian_filter)
+    for value in [None, 0, 1, "false"]:
+        marker["rows"][0]["excluded"] = value
+        with pytest.raises(ValueError, match="boolean"):
+            stage6.validate_gaussian_classes(marker, MODEL_JSON, selection, gaussian_filter)
+    marker["rows"][0]["excluded"] = False
+    selection["selected"][ANCHOR] = False
+    with pytest.raises(ValueError, match="basis"):
+        stage6.validate_gaussian_classes(marker, MODEL_JSON, selection, gaussian_filter)
+
+
+def test_stage6_exclusion_omits_validation_errors_and_preserves_class_echo():
+    row = {"key": ANCHOR, "rrm": 90, "tilt30": False, "disp45": False}
+    result = _a9_result_for(row)
+    result["jobs"][0] = {"key": ANCHOR, "fragment": 1, "nucleotide": "first",
+                         "error": "candidate unavailable", "filters": {}}
+    assert _merge_case(row, result)["rows"][0]["worst_state"] == "error"
+    excluded = {**row, "excluded": True}
+    merged = _merge_case(excluded, result)
+    assert merged["rows"] == []
+    assert merged["echo"]["classes"] == [excluded]
+    assert _merge_case(row, result)["rows"][0]["worst_state"] == "error"

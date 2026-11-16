@@ -1,9 +1,12 @@
+import { stackingKey } from './stackings';
+import type { Stacking } from './types';
 import { markerIsWellFormed } from './project-state';
 
 export type GaussianRrm = 50 | 60 | 70 | 80 | 90 | 95;
-export type GaussianClassRow =
+export type GaussianClassRow = (
   | { key: string; rrm: 50 | 60 | 70 | 80 }
-  | { key: string; rrm: 90 | 95; tilt30: boolean; disp45: boolean };
+  | { key: string; rrm: 90 | 95; tilt30: boolean; disp45: boolean }
+) & { excluded?: boolean };
 
 export interface GaussianClassMarker {
   schema: 1;
@@ -30,13 +33,42 @@ export function selectedGaussianKeys(selection: unknown): string[] {
   return Object.keys(selection.selected).filter(key => selection.selected[key] === true).sort();
 }
 
+/** Keep detector order and join class decisions only for stage-3-selected stackings. */
+export function gaussianStackingTableRows(
+  stackings: readonly Stacking[], marker: GaussianClassMarker | null, selectedKeys: readonly string[],
+) {
+  const selected = new Set(selectedKeys);
+  const classes = new Map(marker?.rows.map(row => [row.key, row]));
+  return stackings.map(stacking => {
+    const key = stackingKey(stacking);
+    const enabled = selected.has(key);
+    const row = enabled ? classes.get(key) ?? null : null;
+    return { key, stacking, selected: enabled, enabled: enabled && row?.excluded !== true, row };
+  });
+}
+
 export function editableGaussianRow(value: unknown): GaussianClassRow | null {
-  if (!isRecord(value) || typeof value.key !== 'string' || !RRMS.includes(value.rrm)) return null;
+  if (!isRecord(value) || typeof value.key !== 'string' || !RRMS.includes(value.rrm)
+    || ('excluded' in value && typeof value.excluded !== 'boolean')) return null;
+  const exclusion = value.excluded === true ? { excluded: true } : {};
   if (value.rrm === 90 || value.rrm === 95) {
     if (typeof value.tilt30 !== 'boolean' || typeof value.disp45 !== 'boolean') return null;
-    return { key: value.key, rrm: value.rrm, tilt30: value.tilt30, disp45: value.disp45 };
+    return { key: value.key, rrm: value.rrm, tilt30: value.tilt30, disp45: value.disp45, ...exclusion };
   }
-  return { key: value.key, rrm: value.rrm };
+  return { key: value.key, rrm: value.rrm, ...exclusion };
+}
+
+/** Only stage-3-selected stackings have a stage-6 enable/disable decision. */
+export function setGaussianStackingEnabled(
+  marker: GaussianClassMarker, key: string, enabled: boolean, selectedKeys: readonly string[],
+): GaussianClassMarker | null {
+  if (!marker.active || !selectedKeys.includes(key) || !marker.basis.includes(key)
+    || !marker.rows.some(row => row.key === key)) return null;
+  return { ...marker, rows: marker.rows.map(row => {
+    if (row.key !== key) return row;
+    const { excluded: _excluded, ...filter } = row;
+    return enabled ? filter : { ...filter, excluded: true };
+  }) };
 }
 
 export function editableGaussianRows(values: unknown): GaussianClassRow[] | null {
@@ -140,7 +172,7 @@ export function revertGaussianClassRow(
     schema: 1,
     basis: [...marker.basis],
     active: true,
-    rows: marker.rows.map((item: GaussianClassRow) => item.key === key ? row : item),
+    rows: marker.rows.map((item: GaussianClassRow) => item.key === key ? { ...row, ...(item.excluded === true ? { excluded: true } : {}) } : item),
   };
 }
 
@@ -154,7 +186,12 @@ export function copyComputedGaussianClasses(
     || !Array.isArray(marker.basis)) return null;
   const rows = computedGaussianRows(scores, marker.basis);
   if (!rows) return null;
-  return { schema: 1, basis: [...marker.basis], active: true, rows };
+  const saved = new Map<string, GaussianClassRow>(marker.rows.map((row: GaussianClassRow) => [row.key, row]));
+  return { schema: 1, basis: [...marker.basis], active: true,
+    rows: rows.map(row => {
+      const previous = saved.get(row.key);
+      return previous?.excluded === true ? previous : row;
+    }) };
 }
 
 export function switchGaussianClass(
@@ -162,13 +199,15 @@ export function switchGaussianClass(
   nextRrm: GaussianRrm,
   automatic: AutomaticGaussianPrefilters,
 ): GaussianClassRow {
-  if (nextRrm < 90) return { key: current.key, rrm: nextRrm as 50 | 60 | 70 | 80 };
+  const exclusion = current.excluded === true ? { excluded: true } : {};
+  if (nextRrm < 90) return { key: current.key, rrm: nextRrm as 50 | 60 | 70 | 80, ...exclusion };
   if (current.rrm === nextRrm) return current;
   return {
     key: current.key,
     rrm: nextRrm as 90 | 95,
     tilt30: automatic.tilt30,
     disp45: automatic.disp45,
+    ...exclusion,
   };
 }
 
@@ -200,7 +239,7 @@ export function gaussianClassDiffCount(marker: unknown, computed: unknown): numb
   if (!rows) return 0;
   const byKey = new Map(rows.map(row => [row.key, row]));
   return marker.rows.reduce((count: number, row: unknown) => {
-    if (!isRecord(row) || typeof row.key !== 'string') return count;
+    if (!isRecord(row) || typeof row.key !== 'string' || row.excluded === true) return count;
     return count + (gaussianRowsDiffer(row, byKey.get(row.key)) ? 1 : 0);
   }, 0);
 }
@@ -217,4 +256,13 @@ export function gaussianReferenceRows(scores: unknown, selectedKeys: readonly st
   const selected = new Set(selectedKeys);
   return scores.reference_scores.filter((row: unknown): row is RecordValue =>
     isRecord(row) && selected.has(row.key));
+}
+
+/** Geometry must describe the same worst kept candidate as the class score. */
+export function gaussianStackingGeometry(scores: unknown, key: string) {
+  const candidates = gaussianCandidateRows(scores, [key]).filter(row =>
+    typeof row.score === 'number' && Number.isFinite(row.score));
+  const bestfit = candidates.reduce<RecordValue | null>((worst, row) =>
+    worst === null || row.score < worst.score ? row : worst, null);
+  return { bestfit, reference: gaussianReferenceRows(scores, [key])[0] ?? null };
 }

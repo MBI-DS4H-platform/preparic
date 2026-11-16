@@ -18,6 +18,9 @@ import {
   classMarkerForContinue,
   copyComputedGaussianClasses,
   gaussianClassDiffCount,
+  gaussianStackingTableRows,
+  gaussianStackingGeometry,
+  setGaussianStackingEnabled,
   reconcileGaussianClassDraft,
   revertGaussianClassRow,
   switchGaussianClass,
@@ -484,7 +487,9 @@ it('W8b stage 6 exposes no reference-anchor editor while keeping Gaussian valida
   expect(stage4).toContain("editValue('pairs'");
   expect(stage4).toContain('<output aria-label="Overlap cRMSD threshold">');
   expect(stage4).toContain('<output aria-label="Overlap ovRMSD threshold">');
-  expect(source).toContain('aria-label="Editable Gaussian classes by selected stacking"');
+  expect(source).toContain('aria-label="Gaussian classes by stacking"');
+  expect(source).not.toContain('Revert row');
+  expect(source).not.toContain('revertClass');
   expect(source).not.toContain('setEnergyThresholdEdits');
   expect(source).not.toContain('copyEnergyThresholds');
   expect(source).not.toContain('editEnergy');
@@ -493,4 +498,90 @@ it('W8b stage 6 exposes no reference-anchor editor while keeping Gaussian valida
   const energyEnd = source.indexOf('</section>', energyStart);
   const energyResults = source.slice(energyStart, energyEnd);
   expect(energyResults).not.toMatch(/<input\b|<button\b/);
+});
+
+
+describe('Gaussian class table stacking data', () => {
+  it('joins classes by participant key and includes disabled stackings without class data', () => {
+    const stacking = (resid: number) => ({
+      rna_resname: 'A', rna_resid: resid, protein_range_pdb_id: 2,
+      protein_resid: 30, protein_resname: 'TYR', distance: 4.1,
+      tilt_angle: 12, slip_angle: 20,
+      rna_centroid: [0, 0, 0] as [number, number, number],
+      protein_centroid: [0, 0, 4.1] as [number, number, number],
+    });
+    const disabledKey = '["A",102,2,30]';
+    const stackings = [stacking(102), stacking(101), stacking(103)];
+    const marker: GaussianClassMarker = {
+      ...classMarker, schema: 1,
+      rows: [{ key: disabledKey, rrm: 80 }, ...classMarker.rows],
+    };
+    const rows = gaussianStackingTableRows(stackings, marker, [key]);
+    expect(rows.map(row => row.stacking)).toEqual(stackings);
+    expect(rows.map(row => row.selected)).toEqual([false, true, false]);
+    expect(rows.map(row => row.row)).toEqual([null, classMarker.rows[0], null]);
+    expect(gaussianStackingTableRows(stackings, null, [key])[1]).toMatchObject({
+      selected: true, row: null,
+    });
+  });
+});
+
+
+it('stage 6 toggles preserve filters, survive shared reconciliation, and never enable stage-3-disabled rows', () => {
+  const original = { ...classMarker, schema: 1 as const };
+  const disabled = setGaussianStackingEnabled(original, key, false, selectedKeys)!;
+  expect(disabled.rows[0]).toEqual({ ...original.rows[0], excluded: true });
+  expect(reconcileGaussianClassDraft(disabled, null, false)).toEqual(disabled);
+  const stacking = { rna_resname: 'A', rna_resid: 101, protein_range_pdb_id: 2,
+    protein_resid: 30, distance: 4, tilt_angle: 10, slip_angle: 20,
+    rna_centroid: [0, 0, 0] as [number, number, number],
+    protein_centroid: [0, 0, 4] as [number, number, number] };
+  expect(gaussianStackingTableRows([stacking], disabled, selectedKeys)[0]).toMatchObject({
+    selected: true, enabled: false,
+  });
+  expect(setGaussianStackingEnabled(disabled, key, true, selectedKeys)).toEqual(original);
+  expect(setGaussianStackingEnabled(disabled, key, true, [])).toBeNull();
+  expect(gaussianStackingTableRows([stacking], original, [])[0]).toMatchObject({
+    selected: false, enabled: false, row: null,
+  });
+  const scores = { schema: 1, filter_names: ['rrm80'], classes: [{ key, rrm: 80 }] };
+  expect(copyComputedGaussianClasses(disabled, scores, true)).toEqual(disabled);
+});
+
+describe('stage-6 exclusion writes', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); appState.stage = 1; });
+
+it('an exclusion uses the existing debounced decision write and keeps stage 6', async () => {
+  const { classes } = setupStage6();
+  expect(seamlessState.projectStage).toBe(6);
+  const disabled = setGaussianStackingEnabled({ ...classMarker, schema: 1 }, key, false, selectedKeys)!;
+  const accepted = setProjectDecisionDebounced('gaussian_classes', disabled, 500);
+  await vi.advanceTimersByTimeAsync(500);
+  expect(JSON.parse(classes.writes[0])).toEqual(disabled);
+  classes.emit(json(disabled), 2);
+  await expect(accepted).resolves.toBe(true);
+  expect(seamlessState.projectStage).toBe(6);
+  expect(seamlessState.projectSnapshot.gaussian_classes).toEqual(disabled);
+});
+
+});
+
+
+it('shows geometry from the lowest-scoring kept candidate for the same stacking', () => {
+  const candidate = (fragment: number, score: number, kept = true) => ({
+    key, fragment, fragment_key: `frag-${fragment}-AA`, nucleotide: 'first', kept,
+    score, distance: 3 + fragment, theta_deg: 10 + fragment, phi_deg: 20 + fragment,
+  });
+  const worst = candidate(2, 0.2);
+  const reference = { key, distance: 4, theta_deg: 15, phi_deg: 25 };
+  const scores = {
+    candidate_scores: [candidate(1, 0.4), candidate(3, 0.01, false),
+      { ...candidate(4, 0.001), key: 'other' }, worst],
+    reference_scores: [{ ...reference, key: 'other' }, reference],
+  };
+  expect(gaussianStackingGeometry(scores, key)).toEqual({ bestfit: worst, reference });
+  expect(gaussianStackingGeometry({ ...scores, candidate_scores: [] }, key))
+    .toEqual({ bestfit: null, reference });
+  expect(gaussianStackingGeometry(null, key)).toEqual({ bestfit: null, reference: null });
 });

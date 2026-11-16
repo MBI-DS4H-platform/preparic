@@ -313,6 +313,7 @@ select.cell-editor { padding-right: 4px; }
 .stage6-flags { min-width: 112px; }
 .stage6-flags label { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; color: #a5b1c1; white-space: nowrap; }
 .stage6-flags input { accent-color: #63b99c; }
+.stage6-disabled { opacity: .5; }
 .stage6-different { background: rgba(201, 153, 79, .08); }
 .stage6-pass { display: inline-block; margin: 5px 0 0 7px; color: #73c9a5; }
 .stage6-fail, .stage6-below { display: inline-block; margin: 5px 0 0 7px; color: #e28b82; }
@@ -341,8 +342,6 @@ select.cell-editor { padding-right: 4px; }
 .stage6-state-green { color: #76c9a4 !important; }
 .stage6-state-amber, .stage6-state-implied { color: #d8b16b !important; }
 .stage6-state-red, .stage6-state-blocked, .stage6-state-error { color: #e38c82 !important; }
-.stage6-score-grid { display: grid; grid-template-columns: 1fr; gap: 13px; }
-.stage6-score-grid h3 { margin: 0 0 8px; color: #afbdcc; font-size: 11px; }
 .stage6-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 
 @media (max-width: 850px) {

@@ -800,3 +800,58 @@ def test_anchor_refe_base_atoms_mirror_alaric_only_base_template_selection():
         # Alaric's Library.create(only_base=True): template atoms with two-character names.
         expected = tuple(name.decode() for name in template["name"] if len(name.decode()) == 2)
         assert names == expected, base
+
+
+@pytest.mark.parametrize("all_disabled", [False, True])
+def test_stage6_exclusions_change_export_anchors_warnings_and_digest_without_changing_stage3_or_matrix(all_disabled):
+    inputs = _inputs_with_two_stacking_classes()
+    before = _normalised(inputs)
+    original_selection = deepcopy(inputs["stacking_selection"])
+    original_matrix = deepcopy(inputs["interaction_matrix"])
+    disabled = [row["key"] for row in inputs["gaussian_classes"]["rows"]]
+    if not all_disabled:
+        disabled = disabled[:1]
+    for row in inputs["gaussian_classes"]["rows"]:
+        if row["key"] in disabled:
+            row["excluded"] = True
+    inputs["gaussian_validation"]["echo"]["classes"] = deepcopy(inputs["gaussian_classes"]["rows"])
+    inputs["gaussian_validation"]["rows"] = [
+        row for row in inputs["gaussian_validation"]["rows"] if row["key"] not in disabled]
+    for row in inputs["gaussian_scores"]["classes"]:
+        if row["key"] in disabled:
+            row["below_rrm95"] = True
+    snapshot = _normalised(inputs)
+    assert export_snapshot.snapshot_digest(snapshot) != export_snapshot.snapshot_digest(before)
+    assert inputs["stacking_selection"] == original_selection
+    assert inputs["interaction_matrix"] == original_matrix
+    assert snapshot["interaction_matrix"]["grid"] == original_matrix["grid"]
+    assert all(key not in disabled for anchor in snapshot["candidate_anchors"] for key in anchor["stackings"])
+    assert not any(w["kind"] == "gaussian" and w["address"] in disabled
+                   for w in export_snapshot.export_warnings(snapshot))
+    assert snapshot["handoff"] == snapshot["interaction_matrix"]["handoff"]
+    if all_disabled:
+        assert snapshot["candidate_anchors"] == []
+        assert all(run["anchors"] == [] for run in snapshot["handoff"]["runs"])
+    else:
+        assert snapshot["candidate_anchors"]
+        assert all(lock["nucleotide"] != 1 for run in snapshot["handoff"]["runs"]
+                   for lock in run["anchors"] if lock["fragment"] == "frag-1-AC")
+    # Old shared validation must never make a new exclusion exportable.
+    stale = deepcopy(inputs)
+    stale["gaussian_validation"] = before["gaussian_validation"]
+    _, blocks = export_snapshot.normalise_export_inputs(stale)
+    assert blocks[0]["code"] == "gaussian-validation-echo"
+
+
+def test_stage6_exclusion_preserves_an_anchor_shared_with_an_enabled_stacking():
+    lock = {"fragment": "frag-1-AC", "nucleotide": 2}
+    anchors = [{"resid": 102, "range": "range-2", "stackings": ["one", "two"], "locks": [lock]}]
+    handoff = {"runs": [{"range": "range-2", "first_fragment": 1, "last_fragment": 1,
+                         "anchors": [lock]}]}
+    original = deepcopy((anchors, handoff))
+    effective, exported = export_snapshot.apply_stacking_exclusions(
+        anchors, handoff, [{"key": "one", "excluded": True}, {"key": "two"}])
+    assert effective[0]["stackings"] == ["two"]
+    assert effective[0]["locks"] == [lock]
+    assert exported["runs"][0]["anchors"] == [lock]
+    assert (anchors, handoff) == original

@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
+  import { appState } from '../lib/state.svelte';
+  import { formatStackingNumber } from '../lib/stackings';
   import Stage4BestFits from './Stage4BestFits.svelte';
   import {
     seamlessState,
@@ -26,15 +28,15 @@
     editableGaussianRows,
     automaticGaussianPrefilters,
     copyComputedGaussianClasses,
-    gaussianCandidateRows,
     gaussianClassDiffCount,
     gaussianFilterName,
-    gaussianReferenceRows,
     gaussianRrmOptions,
     reconcileGaussianClassDraft,
-    revertGaussianClassRow,
+    gaussianStackingTableRows,
+    gaussianStackingGeometry,
     selectedGaussianKeys,
     setGaussianFlag,
+    setGaussianStackingEnabled,
     switchGaussianClass,
     type GaussianClassMarker,
     type GaussianClassRow,
@@ -112,8 +114,8 @@
   let rrmOptions = $derived(gaussianRrmOptions(filterNames));
   let computedClasses = $derived(isRecord(scores) && Array.isArray(scores.classes) ? scores.classes : []);
   let classDiffCount = $derived(gaussianClassDiffCount(classDraft, scores));
-  let candidateScores = $derived(gaussianCandidateRows(scores, selected));
-  let referenceScores = $derived(gaussianReferenceRows(scores, selected));
+  let enabledKeys = $derived(selected.filter(key =>
+    classDraft?.rows.find(row => row.key === key)?.excluded !== true));
   let rangeMarker = $derived(seamlessState.projectSnapshot.ranges);
   let rangeRows = $derived(isRecord(rangeMarker) && Array.isArray(rangeMarker.rows) ? rangeMarker.rows : []);
   let fragments = $derived(seamlessState.computed.fragments);
@@ -124,7 +126,7 @@
   let canEdit = $derived(seamlessState.ready && seamlessState.status === 'live' && seamlessState.projectStage === 6);
   let filterVersion = $derived(isRecord(scores) && typeof scores.filter_set_version === 'string'
     ? scores.filter_set_version : null);
-  let classRows = $derived(classDraft?.rows ?? []);
+  let stackingRows = $derived(gaussianStackingTableRows(appState.stackings, classDraft, selected));
   let clipSummary = $derived(isRecord(clip) ? `${clip.clip1} 5′ / ${clip.clip2} 3′ fragments` : 'pending');
 
   $effect(() => {
@@ -142,13 +144,16 @@
     if (!classDraft || !canEdit || !computedFresh) return;
     const current = classDraft.rows.find(row => row.key === key);
     const computed = computedClasses.find((row: any) => row?.key === key);
-    if (!current || !computed || !classComputed(key)) return;
+    if (!current || current.excluded === true || !computed || !classComputed(key)) return;
     const nextRow = update(current, computed);
-    cancelCurrentExport();
-    const next: GaussianClassMarker = {
+    persistClasses({
       ...classDraft,
       rows: classDraft.rows.map(row => row.key === key ? nextRow : row),
-    };
+    });
+  }
+
+  function persistClasses(next: GaussianClassMarker): void {
+    cancelCurrentExport();
     classDraft = next;
     message = '';
     const revision = ++classWriteRevision;
@@ -156,6 +161,12 @@
       if (revision !== classWriteRevision) return;
       message = accepted ? '' : 'This class edit was dropped because the shared project changed. Review the accepted value and try again.';
     });
+  }
+
+  function changeEnabled(key: string, enabled: boolean): void {
+    if (!classDraft || !canEdit) return;
+    const next = setGaussianStackingEnabled(classDraft, key, enabled, selected);
+    if (next) persistClasses(next);
   }
 
   function changeRrm(key: string, raw: string): void {
@@ -169,20 +180,6 @@
 
   function changeFlag(key: string, flag: 'tilt30' | 'disp45', value: boolean): void {
     updateClass(key, (current) => setGaussianFlag(current, flag, value));
-  }
-
-  function revertClass(key: string): void {
-    if (!classDraft || !canEdit || !computedFresh) return;
-    const next = revertGaussianClassRow(classDraft, key, scores);
-    if (!next) return;
-    cancelCurrentExport();
-    classDraft = next;
-    message = '';
-    const revision = ++classWriteRevision;
-    void setProjectDecisionDebounced('gaussian_classes', next, 500).then(accepted => {
-      if (revision !== classWriteRevision) return;
-      message = accepted ? '' : 'The class revert was dropped because the shared project changed.';
-    });
   }
 
   function copyComputedClasses(): void {
@@ -388,21 +385,32 @@
         <button class="button button-secondary" disabled={!computedFresh || !canEdit} onclick={copyComputedClasses}>Copy computed → editable</button>
       </div>
     </div>
+    <p>Score and geometry show the lowest-scoring best-fit candidate, with reference values underneath.</p>
     {#if !classDraft}
       <p class="stage6-error" role="alert">The editable class table is unavailable. Return to stage 5 and continue again.</p>
     {:else}
       <div class="stage6-table-wrap">
-        <table class="stage6-table" aria-label="Editable Gaussian classes by selected stacking">
-          <thead><tr><th>Selected stacking</th><th>Computed class</th><th>Editable filter</th><th>Automatic / editable prefilters</th><th>Score · reference score</th><th>Actions</th></tr></thead>
+        <table class="stage6-table" aria-label="Gaussian classes by stacking">
+          <thead><tr><th>Enabled</th><th>RNA residue</th><th>Range PDB</th><th>Protein residue</th><th>Computed class</th><th>Editable filter</th><th>Score · reference score</th><th>Automatic / editable prefilters</th><th>Distance</th><th>Plane tilt</th><th>Slip angle</th></tr></thead>
           <tbody>
-            {#each classRows as row (row.key)}
-              {@const computed = computedClasses.find((item: any) => item?.key === row.key)}
-              {@const differs = gaussianClassDiffCount({ ...(classDraft as GaussianClassMarker), rows: [row], basis: [row.key] }, {
+            {#each stackingRows as entry (entry.key)}
+              {@const stacking = entry.stacking}
+              {@const row = entry.row}
+              {@const geometry = entry.enabled ? gaussianStackingGeometry(scores, entry.key) : null}
+              {@const computed = entry.enabled ? computedClasses.find((item: any) => item?.key === entry.key) : null}
+              {@const differs = entry.enabled && row !== null && gaussianClassDiffCount({ ...(classDraft as GaussianClassMarker), rows: [row], basis: [row.key] }, {
                 ...(isRecord(scores) ? scores : {}), classes: computed ? [computed] : [],
               }) > 0}
-              {@const hasFilter = filterNames.includes(gaussianFilterName(row))}
-              <tr class:stage6-different={differs}>
-                <th scope="row"><code>{row.key}</code></th>
+              {@const hasFilter = row !== null && filterNames.includes(gaussianFilterName(row))}
+              <tr class:stage6-different={differs} class:stage6-disabled={!entry.enabled}>
+                <td><input type="checkbox" checked={entry.enabled}
+                  aria-label={`Enable RNA ${stacking.rna_resname} ${stacking.rna_resid} with protein residue ${stacking.protein_resname ?? ''} ${stacking.protein_resid} in range PDB ${stacking.protein_range_pdb_id}`}
+                  disabled={!canEdit || !entry.selected || !row}
+                  onchange={event => changeEnabled(entry.key, event.currentTarget.checked)} /></td>
+                <th scope="row">{stacking.rna_resname} {stacking.rna_resid}<small>Chain {rangeRows[0]?.chain ?? '—'}</small></th>
+                <td>{stacking.protein_range_pdb_id}</td>
+                <td>{stacking.protein_resname ? `${stacking.protein_resname} ${stacking.protein_resid}` : stacking.protein_resid}<small>Chain {rangeRows[stacking.protein_range_pdb_id - 1]?.chain ?? '—'}</small></td>
+                {#if entry.enabled && row}
                 <td>
                   {#if computed}
                     <strong>{computed.filter_name}</strong>
@@ -420,6 +428,9 @@
                   </select>
                   {#if !hasFilter}<small class="stage6-fail">Saved filter {gaussianFilterName(row)} is not in the current model.</small>{/if}
                 </td>
+                <td>
+                  {#if computed}<span>{Number(computed.score).toFixed(6)}</span><small>ref {Number(computed.reference_score).toFixed(6)}</small>{:else}—{/if}
+                </td>
                 <td class="stage6-flags">
                   {#if row.rrm === 90 || row.rrm === 95}
                     <label><input type="checkbox" checked={row.tilt30} disabled={!canEdit || !computedFresh || !filterNames.includes(`rrm${row.rrm}-tilt30`)}
@@ -428,10 +439,27 @@
                       onchange={event => changeFlag(row.key, 'disp45', event.currentTarget.checked)} />displacement &lt; 45°</label>
                   {:else}<span>—</span>{/if}
                 </td>
-                <td>
-                  {#if computed}<span>{Number(computed.score).toFixed(6)}</span><small>ref {Number(computed.reference_score).toFixed(6)}</small>{:else}—{/if}
+                {:else}
+                  <td>—</td><td>—</td><td>—</td><td>—</td>
+                {/if}
+                <td title={geometry?.bestfit ? `Best fit: ${geometry.bestfit.fragment_key} · ${geometry.bestfit.nucleotide}` : undefined}>
+                  {#if entry.enabled}
+                    <span>{geometry?.bestfit ? `${formatStackingNumber(geometry.bestfit.distance, 3)} Å` : '—'}</span>
+                    <small>{formatStackingNumber(geometry?.reference?.distance ?? stacking.distance, 3)} Å</small>
+                  {:else}{formatStackingNumber(stacking.distance)} Å{/if}
                 </td>
-                <td><button class="stage4-revert" aria-label={`Revert ${row.key} to computed class`} disabled={!computedFresh || !differs || !canEdit} onclick={() => revertClass(row.key)}>↶ Revert row</button></td>
+                <td>
+                  {#if entry.enabled}
+                    <span>{geometry?.bestfit ? `${formatStackingNumber(geometry.bestfit.theta_deg)}°` : '—'}</span>
+                    <small>{formatStackingNumber(geometry?.reference?.theta_deg ?? stacking.tilt_angle)}°</small>
+                  {:else}{formatStackingNumber(stacking.tilt_angle)}°{/if}
+                </td>
+                <td>
+                  {#if entry.enabled}
+                    <span>{geometry?.bestfit ? `${formatStackingNumber(geometry.bestfit.phi_deg)}°` : '—'}</span>
+                    <small>{formatStackingNumber(geometry?.reference?.phi_deg ?? stacking.slip_angle)}°</small>
+                  {:else}{formatStackingNumber(stacking.slip_angle)}°{/if}
+                </td>
               </tr>
             {/each}
           </tbody>
@@ -446,7 +474,7 @@
       <p class="stage6-pending" role="status">validating…</p>
     {:else}
       <div class="stage6-validation-list">
-        {#each gaussianValidationRows as row (row.key)}
+        {#each gaussianValidationRows.filter(row => enabledKeys.includes(row.key)) as row (row.key)}
           <article class="stage6-validation-card">
             <h3><code>{row.key}</code> · {row.filter_name} · {row.worst_state}</h3>
             <ul>
@@ -463,18 +491,6 @@
         {/each}
       </div>
     {/if}
-  </section>
-
-  <section class="stage6-section" aria-label="Best-fit and reference stacking scores">
-    <div class="stage6-heading"><div><h2>Stacking scores</h2><p>Raw Gaussian densities remain visible when geometry lies outside the acceptance mask.</p></div></div>
-    <div class="stage6-score-grid">
-      <div><h3>Best-fit candidates</h3><div class="stage6-table-wrap"><table class="stage6-table"><thead><tr><th>Anchor / fragment</th><th>distance</th><th>φ</th><th>θ</th><th>score</th><th>mask</th></tr></thead><tbody>
-        {#each candidateScores as row, index (`${row.key}:${row.fragment}:${row.nucleotide}:${index}`)}<tr><td><code>{row.key}</code><small>{row.fragment_key} · {row.nucleotide}</small></td><td>{Number(row.distance).toFixed(3)} Å</td><td>{Number(row.phi_deg).toFixed(2)}°</td><td>{Number(row.theta_deg).toFixed(2)}°</td><td>{Number(row.score).toFixed(6)}</td><td>{row.mask_pass ? 'pass' : 'outside'}</td></tr>{/each}
-      </tbody></table></div></div>
-      <div><h3>Reference anchors</h3><div class="stage6-table-wrap"><table class="stage6-table"><thead><tr><th>Anchor</th><th>distance</th><th>φ</th><th>θ</th><th>score</th></tr></thead><tbody>
-        {#each referenceScores as row (row.key)}<tr><td><code>{row.key}</code></td><td>{Number(row.distance).toFixed(3)} Å</td><td>{Number(row.phi_deg).toFixed(2)}°</td><td>{Number(row.theta_deg).toFixed(2)}°</td><td>{Number(row.score).toFixed(6)}</td></tr>{/each}
-      </tbody></table></div></div>
-    </div>
   </section>
 
   <Stage4BestFits embedded={true} readOnly={true} onBack={leaveStageAndCancel} onContinue={async () => false} />

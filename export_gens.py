@@ -276,6 +276,8 @@ def _class_index(snapshot: dict) -> tuple[dict[str, str], dict[str, float]]:
             raise ValueError("A Gaussian class row is malformed.")
         if row["key"] in class_by_key:
             raise ValueError(f"The Gaussian class table repeats {row['key']}.")
+        if row.get("excluded") is True:
+            continue
         name = _class_name(row)
         spec = model["thresholds"].get(name)
         if type(spec) is not dict or type(spec.get("cutoff")) not in (int, float) \

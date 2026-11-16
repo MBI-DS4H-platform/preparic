@@ -180,3 +180,19 @@ def test_legacy_threshold_bases_load_as_undecided_with_preserved_diagnostics(tmp
     assert value is None
     assert diagnostics
     assert path.read_text() == raw
+
+
+@pytest.mark.parametrize("rrm", [50, 90])
+def test_stage6_exclusions_survive_restart_and_reject_non_booleans(tmp_path, rrm):
+    value = marker("gaussian_classes")
+    value["rows"][0].update(rrm=rrm, excluded=True)
+    if rrm == 90:
+        value["rows"][0].update(tilt30=True, disp45=False)
+    path = tmp_path / "gaussian-classes.json"
+    path.write_text(json.dumps(value))
+    assert backend.load_marker_payload(path, "gaussian_classes") == (value, [])
+    value["rows"][0]["excluded"] = 1
+    path.write_text(json.dumps(value))
+    loaded, diagnostics = backend.load_marker_payload(path, "gaussian_classes")
+    assert loaded is None
+    assert diagnostics

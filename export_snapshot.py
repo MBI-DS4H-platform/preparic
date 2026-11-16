@@ -1009,6 +1009,7 @@ def _validate_gaussian(inputs: dict, selected_keys: list[str], best_fits: Any,
         _problem("gaussian-class", None, str(exc),
                  "Repair stage-6 classes using a filter in the current Gaussian model.")
     class_table = [dict(row) for row in class_rows]
+    enabled_keys = [row["key"] for row in class_rows if row.get("excluded") is not True]
     model_names = set(model["thresholds"])
     validation = inputs.get("gaussian_validation")
     if not _is_record(validation) or type(validation.get("schema")) is not int \
@@ -1098,19 +1099,19 @@ def _validate_gaussian(inputs: dict, selected_keys: list[str], best_fits: Any,
             _problem("gaussian-validation-row", None, "A Gaussian validation row has no class address.",
                      "Recompute stage 6 validation.")
         key = row["key"]
-        if key not in selected_keys:
+        if key not in enabled_keys:
             _problem("gaussian-validation-row", key, "A Gaussian validation row has an unknown class address.",
-                     "Recompute stage 6 validation for the current selected stackings.")
+                     "Recompute stage 6 validation for the current enabled stackings.")
         if key in validation_keys:
             _problem("gaussian-validation-duplicate", key,
-                     "Gaussian validation contains more than one row for this selected class.",
-                     "Recompute stage 6 validation so each selected class has exactly one row.")
+                     "Gaussian validation contains more than one row for this enabled class.",
+                     "Recompute stage 6 validation so each enabled class has exactly one row.")
         validation_keys.append(key)
-    if set(validation_keys) != set(selected_keys) or len(validation_keys) != len(selected_keys):
-        missing = next((key for key in selected_keys if key not in validation_keys), None)
+    if set(validation_keys) != set(enabled_keys) or len(validation_keys) != len(enabled_keys):
+        missing = next((key for key in enabled_keys if key not in validation_keys), None)
         _problem("gaussian-validation-missing", missing,
-                 "Gaussian validation must contain exactly one row for every selected class.",
-                 "Recompute stage 6 validation for all current selected stackings.")
+                 "Gaussian validation must contain exactly one row for every enabled class.",
+                 "Recompute stage 6 validation for all current enabled stackings.")
     for row in validation["rows"]:
         if row.get("worst_state") not in {"green", "implied", "amber", "red", "error"}:
             _problem("gaussian-validation-state", row["key"], "A Gaussian validation row has an unknown result state.",
@@ -1335,6 +1336,29 @@ def _stage6_gate(inputs: dict) -> list[dict]:
     return []
 
 
+def apply_stacking_exclusions(anchors: list[dict], handoff: dict,
+                             class_rows: list[dict]) -> tuple[list[dict], dict]:
+    """Apply stage-6 decisions after validating the unchanged stage-3/5 evidence."""
+    excluded = {row["key"] for row in class_rows if row.get("excluded") is True}
+    effective = []
+    for anchor in anchors:
+        keys = [key for key in anchor["stackings"] if key not in excluded]
+        if keys:
+            effective.append({**anchor, "stackings": keys})
+    runs = []
+    for run in handoff["runs"]:
+        locks = []
+        for anchor in effective:
+            if anchor["range"] != run["range"]:
+                continue
+            for lock in anchor["locks"]:
+                number = int(_FRAGMENT_KEY.fullmatch(lock["fragment"]).group(1))
+                if run["first_fragment"] <= number <= run["last_fragment"] and lock not in locks:
+                    locks.append(dict(lock))
+        runs.append({**run, "anchors": locks})
+    return effective, {**handoff, "runs": runs}
+
+
 def _build_snapshot(inputs: dict) -> tuple[dict | None, list[dict]]:
     blocks: list[dict] = []
     required = (
@@ -1480,6 +1504,8 @@ def _build_snapshot(inputs: dict) -> tuple[dict | None, list[dict]]:
         _problem("selected-stackings", None, "Selected stacking identities could not be resolved exactly.",
                  "Recompute stage 3 and restore the current selected stackings.")
 
+    anchors, effective_handoff = apply_stacking_exclusions(anchors, inputs["interactions"], class_rows)
+    interaction = {**interaction, "handoff": effective_handoff}
     snapshot = {
         "schema": 1,
         "structure": {"pdbcode": code_lower, "biounit": biounit, "structure_id": code_upper},
@@ -1498,7 +1524,7 @@ def _build_snapshot(inputs: dict) -> tuple[dict | None, list[dict]]:
         "stackings": selected_stackings,
         "candidate_anchors": anchors,
         "interaction_matrix": interaction,
-        "handoff": inputs["interactions"],
+        "handoff": effective_handoff,
         "energy_cells": energy_rows,
         "clipped_fragments": clipped_files,
         "class_table": gaussian["class_table"],
@@ -1534,16 +1560,19 @@ def export_warnings(snapshot: Any) -> list[dict]:
         raise ValueError("export_warnings requires a valid schema-1 ExportSnapshot.")
     warnings = []
     validation = snapshot.get("gaussian_validation", {})
+    excluded = {row["key"] for row in snapshot.get("class_table", [])
+                if _is_record(row) and row.get("excluded") is True}
     gaussian_reasons: dict[str, list[str]] = {}
     for row in validation.get("rows", []) if _is_record(validation) else []:
         if _is_record(row) and row.get("worst_state") in {"implied", "amber", "red"} \
-            and isinstance(row.get("key"), str):
+            and isinstance(row.get("key"), str) and row["key"] not in excluded:
             gaussian_reasons.setdefault(row["key"], []).append(
                 f"the selected Gaussian filter has {row['worst_state']} validation results"
             )
     scores = snapshot.get("gaussian_scores", {})
     for row in scores.get("classes", []) if _is_record(scores) else []:
-        if _is_record(row) and row.get("below_rrm95") is True and isinstance(row.get("key"), str):
+        if _is_record(row) and row.get("below_rrm95") is True \
+            and isinstance(row.get("key"), str) and row["key"] not in excluded:
             gaussian_reasons.setdefault(row["key"], []).append(
                 "the computed Gaussian class is below RRM-95"
             )

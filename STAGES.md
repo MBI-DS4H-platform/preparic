@@ -209,17 +209,29 @@ the tilt30 and disp45 prefilters are proposed when every kept candidate has
 θ < 30° or φ < 45°, respectively. The reference score is shown for
 information only. A clipped candidate contributes nothing.
 
-The class table holds one editable row per selected stacking, with Copy,
-per-row revert and difference marks, and writes debounced by 500 ms. It is the
-only editable decision in stage 6. S11 pair thresholds may appear as a
+The class table shows every detected stacking, with residue and chain details
+and an Enabled checkbox. Stackings disabled in stage 3 have a locked, unchecked
+checkbox. A stage-3-selected stacking can be disabled and enabled here without
+leaving stage 6; its filter settings are retained. Disabled rows show no filter
+statistics. Score, distance, plane tilt and slip angle show the lowest-scoring
+kept best-fit candidate, with reference values on the second line of each cell.
+Copy computed updates only enabled rows, and differences are marked.
+Class and Enabled edits are debounced by 500 ms in the same stage-6 decision.
+The optional boolean `excluded` on a saved class row records this stage-6 choice;
+older files without it keep all stage-3-selected stackings enabled. Exclusions
+do not change the stage-3 selection or the stage-5 interaction matrix. Validation
+and export omit disabled stackings and their anchor constraints; a candidate
+shared with another enabled stacking remains an anchor. Changing Enabled also
+invalidates export readiness until current validation and admission are ready.
+The class table is the only editable decision in stage 6. S11 pair thresholds may appear as a
 read-only comparison, and S24 energy thresholds may appear read-only; neither
 has inputs or Copy/Revert controls there. A model or fit change updates the
 computed values and the marks, never the user's classes. Stage 4 remains the
 only stage where S11 can be edited.
 
 **Validation.** The backend runs Alaric's all-filter check (A9, T21) once for
-every kept candidate against all twelve filters. Class edits do not rerun
-it; they only re-merge its results (T22). Each row then shows green, amber,
+every kept candidate against all twelve filters. Class and Enabled edits do not rerun
+it; they only re-merge its results (T22) for enabled stackings. Each row then shows green, amber,
 red or blocked from its worst kept candidate. A result implied by a broader
 filter is shown as implied, never as 0 %. A failing clipped candidate no
 longer affects its stacking; uncovering it restores its contribution.

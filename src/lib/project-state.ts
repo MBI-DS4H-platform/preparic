@@ -231,11 +231,13 @@ function validClasses(value: unknown): boolean {
   for (const row of value.rows) {
     if (!isRecord(row) || typeof row.key !== 'string' || row.key.length === 0
       || ![50, 60, 70, 80, 90, 95].includes(row.rrm as number)) return false;
+    if ('excluded' in row && typeof row.excluded !== 'boolean') return false;
+    const fields = 'excluded' in row ? ['excluded'] : [];
     keys.push(row.key);
     if (row.rrm === 90 || row.rrm === 95) {
-      if (!hasOnlyKeys(row, ['key', 'rrm', 'tilt30', 'disp45'])
+      if (!hasOnlyKeys(row, ['key', 'rrm', 'tilt30', 'disp45', ...fields])
         || typeof row.tilt30 !== 'boolean' || typeof row.disp45 !== 'boolean') return false;
-    } else if (!hasOnlyKeys(row, ['key', 'rrm'])) return false;
+    } else if (!hasOnlyKeys(row, ['key', 'rrm', ...fields])) return false;
   }
   return isUnique(keys) && sameValue([...keys].sort(), [...value.basis].sort());
 }

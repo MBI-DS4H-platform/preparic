@@ -942,10 +942,13 @@ import { activeDinucleotidePairs, canContinueStage4, fragmentIdentityKey, canEnt
       <div class="sync-overlay" role="status" aria-live="polite">
         <div class="sync-overlay-card">
           <span class="sync-overlay-spinner" aria-hidden="true"></span>
-          <strong>{seamlessState.status === 'disconnected' ? 'Connection lost' : 'Synchronizing shared project'}</strong>
+          <strong>{seamlessState.status === 'connecting' ? 'Connecting to shared project'
+            : seamlessState.status === 'disconnected' ? 'Connection lost' : 'Synchronizing shared project'}</strong>
           <span>{seamlessState.status === 'disconnected'
             ? 'Your last project view is preserved. Editing is paused until shared state is reread.'
-            : 'Your project view is preserved while shared values are reread.'}</span>
+            : seamlessState.status === 'connecting'
+              ? 'Waiting for the backend to start. This page will connect automatically.'
+              : 'Your project view is preserved while shared values are reread.'}</span>
         </div>
       </div>
     {/if}
