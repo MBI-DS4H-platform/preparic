@@ -1,7 +1,7 @@
 """Integration checks for the live backend graph and its stacking attachments."""
 
 import json
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import pytest
 import yaml
@@ -194,6 +194,21 @@ def test_backend_graph_mounts_and_shares_stacking_cells(
         assert actual_stackings == expected_stackings
         context.mounts.sync(timeout=60)
         assert json.loads(stackings_path.read_text(encoding="utf-8")) == expected_stackings
+
+        # Reordering the protein ranges must also work when both orderings
+        # already have cached transformation results.
+        for swap in range(4):
+            ordered = [range_rows[0], *range_rows[:0:-1]] if swap % 2 == 0 else range_rows
+            decision["rows"] = ordered
+            with urlopen(context.ranges.share.url, timeout=5) as response:
+                marker = response.headers['X-Seamless-Marker']
+            request = Request(
+                f'{context.ranges.share.url}?marker={marker}',
+                data=yaml.safe_dump(decision, sort_keys=False).encode(), method='PUT',
+            )
+            with urlopen(request, timeout=15) as response:
+                assert response.status == 200
+            assert context.stackings.run()["echo"]["rows"] == ordered
 
         with urlopen(f"{context.shares.url}/state-graph", timeout=5) as response:
             state_graph = json.load(response)

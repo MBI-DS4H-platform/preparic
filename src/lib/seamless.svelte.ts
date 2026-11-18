@@ -707,6 +707,7 @@ function refreshVisibleErrors(): void {
     hasInitialStateGraph: seamlessState.hasInitialStateGraph,
     pendingInputs: new Set(seamlessState.pendingInputs),
     nodes: lastStateGraphNodes,
+    hasStructureSelection: !!seamlessState.pdbCode,
   });
   seamlessState.rangeTransformError = seamlessState.stateGraphErrors
     .find(issue => issue.name === 'ranges_to_pdb' || issue.name === 'parse_ranges')?.message ?? '';
@@ -1206,7 +1207,8 @@ function receiveStackings(value: SharedValue, marker?: number): void {
   seamlessState.hasStackingsSnapshot = true;
   seamlessState.stackingsError = '';
   if (appState.staleStackingRevision !== null
-    && seamlessState.stackingRevision <= appState.staleStackingRevision) return;
+    && seamlessState.stackingRevision <= appState.staleStackingRevision
+    && !seamlessState.computedFreshness.stackings) return;
   if (appState.staleStackingRevision !== null) appState.staleStackingRevision = null;
 
   const signature = JSON.stringify(stackings);
@@ -1237,6 +1239,15 @@ function receiveStackings(value: SharedValue, marker?: number): void {
     seamlessState.stackingSelectionReady = true;
     seamlessState.stackingSelectionError = '';
   }
+}
+
+/** Reuse a retained result when edited ranges return to its exact input lineage. */
+export function restoreCurrentStackings(): void {
+  if (appState.staleStackingRevision === null || !seamlessState.computedFreshness.stackings) return;
+  const ranges = currentRangeSpecs() as { rows?: unknown } | null;
+  const localRows = appState.rows.map(row => ({ chain: row.chain, start: Number(row.start), end: Number(row.end) }));
+  if (!ranges || stableJson(ranges.rows) !== stableJson(localRows)) return;
+  receiveStackings(JSON.stringify(seamlessState.computed.stackings), client?.stackings?.marker);
 }
 
 function receiveStackingSelection(value: SharedValue, marker?: number): void {

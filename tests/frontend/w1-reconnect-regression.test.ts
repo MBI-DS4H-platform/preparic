@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  connectToSeamless, seamlessState,
+  connectToSeamless, seamlessState, restoreCurrentStackings,
   type SharedCell, type SharedValue, type ShareContext,
 } from '../../src/lib/seamless.svelte';
+
+import { appState, invalidateStackingState } from '../../src/lib/state.svelte';
 
 const rna = { chain: 'A', start: 101, end: 104 };
 const rows = [rna];
@@ -17,9 +19,10 @@ class Cell implements SharedCell {
   emit(value: SharedValue) { this.value = value; this.onchange(value); }
 }
 
-function setup(beforeConnect: (cells: Record<string, Cell>) => void = () => undefined) {
+function setup(beforeConnect: (cells: Record<string, Cell>) => void = () => undefined, extraValues: Record<string, SharedValue> = {}) {
   const doc = (value: unknown) => JSON.stringify(value);
   const values: Record<string, SharedValue> = {
+    ...extraValues,
     pdbcode: '1B7F', biounit: '1',
     ranges: doc({ schema: 1, basis: { pdbcode: '1B7F', biounit: 1 }, active: true, rows }),
     stacking_selection: doc({ schema: 1, basis: { pdbcode: '1B7F', biounit: 1, rows }, active: true, selected: {} }),
@@ -107,4 +110,38 @@ describe('W1 P5/P9 reconnect requires a current-connection read of each result',
       expect(seamlessState.computedFreshness.fragments).toBe(true);
     }
   });
+});
+
+
+it('restores a cached stacking table after ranges return to its lineage without a new marker', async () => {
+  const stackingRows = [{ rna_resname: 'G', rna_resid: 101, protein_range_pdb_id: 2,
+    protein_resid: 93, distance: 4.2, tilt_angle: 22, slip_angle: 19,
+    rna_centroid: [1, 2, 3], protein_centroid: [4, 5, 6] }];
+  const table = { schema: 1, echo: { structure_id: '1B7F', pdbcode: '1B7F', biounit: 1, rows }, rows: stackingRows };
+  const { cells } = setup(initialCells => {
+    vi.stubGlobal('fetch', vi.fn(async (url: URL) => {
+      const key = url.pathname.split('/').pop()!;
+      const value = initialCells[key]?.value ?? null;
+      return new Response(value === null ? null : String(value), {
+        status: value === null ? 204 : 200, headers: { 'x-seamless-marker': '1' },
+      });
+    }));
+  }, { stackings: JSON.stringify(table) });
+  await flushPromiseQueue();
+  appState.rows = [{ id: 'rna', alwaysVisible: false, chain: 'A', start: '101', end: '104' }];
+  expect(seamlessState.computedFreshness.stackings).toBe(true);
+  const original = cells.ranges.value;
+  const changed = JSON.parse(String(original));
+  changed.rows = [{ chain: 'B', start: 1, end: 4 }, rna];
+  cells.ranges.emit(JSON.stringify(changed));
+  appState.rows = [{ id: 'protein', alwaysVisible: false, chain: 'B', start: '1', end: '4' }, ...appState.rows];
+  invalidateStackingState(seamlessState.stackingRevision);
+  restoreCurrentStackings();
+  expect(appState.stackings).toEqual([]);
+  cells.ranges.emit(original);
+  appState.rows = [{ id: 'rna', alwaysVisible: false, chain: 'A', start: '101', end: '104' }];
+  invalidateStackingState(seamlessState.stackingRevision);
+  restoreCurrentStackings();
+  expect(appState.stackings).toEqual(stackingRows);
+  expect(appState.staleStackingRevision).toBeNull();
 });

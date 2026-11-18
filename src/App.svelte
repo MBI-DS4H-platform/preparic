@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import Stage1Structure from './components/Stage1Structure.svelte';
   import Stage2Ranges from './components/Stage2Ranges.svelte';
   import Stage3Stackings from './components/Stage3Stackings.svelte';
@@ -7,7 +8,7 @@
   import Stage6Gaussian from './components/Stage6Gaussian.svelte';
   import Viewer from './components/Viewer.svelte';
   import { clearStructureDependentState, enterStage2, enterStage3, appState, invalidateStackingState, returnToStage1, returnToStage2 } from './lib/state.svelte';
-  import { cancelSharedCifWrite, deactivateProjectDecisionAndWait, prepareProjectTransition, readSharedCif, resetStage4ActiveNucleotide, seamlessState, setEnergyThresholdEditsAwaited, setProjectDecisionAwaited, setSharedBiounitIndex, setSharedCif, setSharedPdbCode, setSharedRangeRows, setSharedStackingSelectionAndWait, waitForShareWrite } from './lib/seamless.svelte';
+  import { restoreCurrentStackings, cancelSharedCifWrite, deactivateProjectDecisionAndWait, prepareProjectTransition, readSharedCif, resetStage4ActiveNucleotide, seamlessState, setEnergyThresholdEditsAwaited, setProjectDecisionAwaited, setSharedBiounitIndex, setSharedCif, setSharedPdbCode, setSharedRangeRows, setSharedStackingSelectionAndWait, waitForShareWrite } from './lib/seamless.svelte';
   import { findChain } from './lib/chains';
   import { cloneRangeRows, updateRow, validateRows } from './lib/ranges';
   import { mergeStackings, observeStage2RangeRows, resolveSelectedStackings, resolveStackingParticipants, stackingRowsAtResidue } from './lib/stackings';
@@ -110,6 +111,14 @@ import { activeDinucleotidePairs, canContinueStage4, fragmentIdentityKey, canEnt
     const result = observeStage2RangeRows(rangeObservation, appState.stage, appState.rows);
     rangeObservation = result.observation;
     if (result.changed) invalidateStackingState(seamlessState.stackingRevision);
+  });
+
+  $effect(() => {
+    // A cached backend result may keep its marker when an edit is undone.
+    appState.rows;
+    appState.staleStackingRevision;
+    seamlessState.computedFreshness.stackings;
+    untrack(restoreCurrentStackings);
   });
 
   let viewer = $state<MolViewer | null>(null);

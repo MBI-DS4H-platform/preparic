@@ -422,6 +422,7 @@ export interface TransformerErrorOptions {
   hasInitialStateGraph: boolean;
   pendingInputs: ReadonlySet<string>;
   nodes: readonly StateGraphNode[];
+  hasStructureSelection?: boolean;
 }
 
 /**
@@ -435,6 +436,7 @@ export function visibleTransformerErrors(options: TransformerErrorOptions): Visi
     const name = node.path.map(String).find(part => Object.hasOwn(TRANSFORMER_STAGE, part)
       || /^energetics_range_[1-9]\d*$/.test(part));
     if (!name) continue;
+    if (name === 'structure_id' && options.hasStructureSelection === false) continue;
     const templateName = name.startsWith('energetics_range_') ? 'energetics_range' : name;
     if (TRANSFORMER_STAGE[templateName] > options.stage) continue;
     const failed = node.state === 'failed' || (node.state === undefined && !!node.exception);
@@ -445,7 +447,10 @@ export function visibleTransformerErrors(options: TransformerErrorOptions): Visi
     errors.push({
       name,
       state: blocked ? 'blocked' : 'failed',
-      message: blocked ? 'blocked' : node.exception || 'Transformation failed.',
+      message: node.exception || (blocked && name === 'pdbs_to_folder'
+        ? options.nodes.find(upstream => upstream.path.some(part => part === 'ranges_to_pdb' || part === 'range_pdbs') && upstream.exception)?.exception
+          || 'Cannot prepare range PDBs. Range 1 must be RNA; every following range must be protein. Review the selected chains and residue endpoints.'
+        : blocked ? 'blocked' : 'Transformation failed.'),
     });
   }
   return errors;

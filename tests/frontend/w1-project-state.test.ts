@@ -280,3 +280,20 @@ it('W8b restores a singleton before computed inventory arrives and ignores resul
   state.best_fit_clip.clip1 = 1;
   expect(deriveProjectStage(state)).toBe(4);
 });
+
+
+it('hides structure errors only before a structure is selected', () => {
+  const options = { stage: 1 as const, hasInitialStateGraph: true, pendingInputs: new Set<string>(),
+    nodes: [{ path: ['structure_id'], state: 'failed', exception: 'The stored CIF is empty; download the structure again.' }] };
+  expect(visibleTransformerErrors({ ...options, hasStructureSelection: false })).toEqual([]);
+  expect(visibleTransformerErrors({ ...options, hasStructureSelection: true })).toHaveLength(1);
+});
+
+it('explains range folder blocking using the upstream range validation error', () => {
+  const message = "Range 1 chain 'B' is annotated as 'polypeptide(L)'; expected RNA.";
+  const options = { stage: 2 as const, hasInitialStateGraph: true, pendingInputs: new Set<string>(),
+    nodes: [{ path: ['pdbs_to_folder'], state: 'blocked' },
+      { path: ['ranges_to_pdb'], state: 'failed', exception: message }] };
+  expect(visibleTransformerErrors(options).find(error => error.name === 'pdbs_to_folder')?.message).toBe(message);
+  expect(visibleTransformerErrors({ ...options, nodes: options.nodes.slice(0, 1) })[0].message).toContain('Range 1 must be RNA');
+});
