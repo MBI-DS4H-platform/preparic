@@ -65,9 +65,10 @@ parameters apply only in stage 1 with an empty PDB code.
 - **Eight local spawn workers.** The backend starts exactly eight Seamless
   spawn workers on this machine. Every transformation runs in one of them.
   There are no remote workers.
-- **No persistent result caching.** The backend loads no Seamless
-  configuration and needs no hashserver or database; it starts and runs with
-  neither installed. Results are reused only within one live backend.
+- **Temporary caching.** Each backend starts its own hashserver in a temporary
+  directory for buffer caching. The server stops and the directory is deleted
+  when the backend stops. No database server or jobserver is started, and cached
+  buffers are not retained across backend restarts.
 - **Durable decisions.** Every decision the user makes is a file-authoritative
   mount under `deployment-mounts/` (the table in [STAGES.md](STAGES.md)),
   including the downloaded CIF. A missing or malformed file loads as
@@ -121,7 +122,7 @@ The frontend tests cover the stage derivation, marker validation, freshness,
 deferred writes, and each stage's pure logic (`w1-*`, `w3-stage4`,
 `w45-stage5`, `w6-anchor-constants`, `w7-*`, and the clip and selection
 tests). The backend tests cover the decision loader, the eight-worker spawn
-runtime with no services (`test_w1_spawn_runtime.py`), preparation
+runtime (`test_w1_spawn_runtime.py`), preparation
 (`test_w3_*`), stage 4, stage 5 (`test_w45_stage5_acceptance.py`) and
 stage 6 (`test_w7_*`).
 

@@ -11,8 +11,13 @@ import math
 import os
 import re
 import signal
+import subprocess
 import sys
+import tempfile
 import threading
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import seamless
@@ -55,8 +60,23 @@ CLIPPED_FRAGMENTS_PATH = MOUNT_DIRECTORY / "clipped-fragments"
 
 LOCAL_WORKER_COUNT = 8
 _LOCAL_EXECUTION_CONFIGURED = False
+_HASH_SERVER_PROCESS: subprocess.Popen | None = None
+_HASH_SERVER_TEMP_DIRECTORY: tempfile.TemporaryDirectory | None = None
+_HASH_SERVER_LOG = None
+_HASH_SERVER_URL: str | None = None
+_HASH_SERVER_CLIENT_ENV_BEFORE: dict[str, str | None] | None = None
+_HASH_SERVER_CLIENT_ENV_SET: dict[str, str] = {}
+_BACKEND_ATEXIT_REGISTERED = False
+_BACKEND_CLOSING = False
 _STAGE5_RANGE_SYNC_STOP: threading.Event | None = None
 _STAGE5_RANGE_SYNC_THREAD: threading.Thread | None = None
+
+_HASH_SERVER_STARTUP_TIMEOUT = 30.0
+_HASH_SERVER_STOP_TIMEOUT = 10.0
+_WORKER_REMOTE_CLIENT_ENV = (
+    "SEAMLESS_REMOTE_CLIENTS",
+    "SEAMLESS_ALLOW_REMOTE_CLIENTS_IN_WORKER",
+)
 
 _RANGE_KEYS = {"chain", "start", "end"}
 _MARKER_KEYS = {
@@ -328,8 +348,8 @@ def _mounted_decision(context: Context, name: str, path: Path, celltype: str = "
 def configure_local_execution(spawn_fn=None) -> int:
     """Select the approved eight-worker local spawn runtime exactly once.
 
-    No configuration loader is called here: this backend has no persistent
-    Seamless result cache, hashserver, database, or remote execution service.
+    Hashserver setup is managed separately by the backend; this function only
+    configures local workers and never starts database or jobserver services.
     """
     global _LOCAL_EXECUTION_CONFIGURED
     if _LOCAL_EXECUTION_CONFIGURED:
@@ -344,6 +364,216 @@ def configure_local_execution(spawn_fn=None) -> int:
     spawn_fn(LOCAL_WORKER_COUNT)
     _LOCAL_EXECUTION_CONFIGURED = True
     return LOCAL_WORKER_COUNT
+
+
+def _ensure_backend_atexit() -> None:
+    """Register one backend shutdown path before acquiring runtime resources."""
+    global _BACKEND_ATEXIT_REGISTERED
+    if not _BACKEND_ATEXIT_REGISTERED:
+        atexit.register(close_context)
+        _BACKEND_ATEXIT_REGISTERED = True
+
+
+def _hashserver_log_tail(log_path: Path) -> str:
+    try:
+        return log_path.read_text(encoding="utf-8", errors="replace")[-4000:].strip()
+    except OSError:
+        return ""
+
+
+def _stop_hashserver() -> None:
+    """Stop the owned server before removing the directory it writes to."""
+    global _HASH_SERVER_PROCESS, _HASH_SERVER_TEMP_DIRECTORY
+    global _HASH_SERVER_LOG, _HASH_SERVER_URL
+
+    process = _HASH_SERVER_PROCESS
+    if process is not None:
+        if process.poll() is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=_HASH_SERVER_STOP_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                process.wait()
+        _HASH_SERVER_PROCESS = None
+        _HASH_SERVER_URL = None
+    if _HASH_SERVER_LOG is not None:
+        _HASH_SERVER_LOG.close()
+        _HASH_SERVER_LOG = None
+    if _HASH_SERVER_TEMP_DIRECTORY is not None:
+        _HASH_SERVER_TEMP_DIRECTORY.cleanup()
+        _HASH_SERVER_TEMP_DIRECTORY = None
+
+
+def _start_hashserver() -> str:
+    """Start an ephemeral writable hashserver and return its local URL."""
+    global _HASH_SERVER_PROCESS, _HASH_SERVER_TEMP_DIRECTORY
+    global _HASH_SERVER_LOG, _HASH_SERVER_URL
+
+    if _HASH_SERVER_PROCESS is not None:
+        if _HASH_SERVER_PROCESS.poll() is None and _HASH_SERVER_URL is not None:
+            return _HASH_SERVER_URL
+        _stop_hashserver()
+
+    temporary = tempfile.TemporaryDirectory(prefix="preparic-hashserver-")
+    _HASH_SERVER_TEMP_DIRECTORY = temporary
+    temporary_path = Path(temporary.name)
+    buffer_directory = temporary_path / "buffers"
+    buffer_directory.mkdir()
+    status_path = temporary_path / "status.json"
+    status_path.write_text(json.dumps({"status": "starting"}) + "\n", encoding="utf-8")
+    log_path = temporary_path / "hashserver.log"
+    log_file = log_path.open("w", encoding="utf-8")
+    server_env = os.environ.copy()
+    for name in (
+        "HASHSERVER_DIRECTORY",
+        "HASHSERVER_WRITABLE",
+        "HASHSERVER_EXTRA_DIRS",
+        "HASHSERVER_LAYOUT",
+        "HASHSERVER_HASH_ALGORITHM",
+        "HASHSERVER_LOCK_TIMEOUT",
+    ):
+        server_env.pop(name, None)
+
+    _HASH_SERVER_LOG = log_file
+    try:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "hashserver",
+                str(buffer_directory),
+                "--writable",
+                "--host",
+                "127.0.0.1",
+                "--status-file",
+                str(status_path),
+            ],
+            cwd=temporary_path,
+            env=server_env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
+    except BaseException:
+        try:
+            _stop_hashserver()
+        except BaseException as cleanup_error:
+            print(
+                f"Hashserver cleanup after launch failure raised: {cleanup_error}",
+                file=sys.stderr,
+                flush=True,
+            )
+        raise
+
+    _HASH_SERVER_PROCESS = process
+    try:
+        deadline = time.monotonic() + _HASH_SERVER_STARTUP_TIMEOUT
+        while time.monotonic() < deadline:
+            return_code = process.poll()
+            if return_code is not None:
+                raise RuntimeError(
+                    f"hashserver exited during startup with code {return_code}. "
+                    f"Log: {_hashserver_log_tail(log_path)}"
+                )
+            try:
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                status = None
+            if isinstance(status, dict):
+                if status.get("status") == "failed":
+                    raise RuntimeError(
+                        "hashserver reported startup failure. "
+                        f"Log: {_hashserver_log_tail(log_path)}"
+                    )
+                if status.get("status") == "running":
+                    port = status.get("port")
+                    if type(port) is not int or not 1 <= port <= 65535:
+                        raise RuntimeError(
+                            f"hashserver reported an invalid port: {port!r}"
+                        )
+                    url = f"http://127.0.0.1:{port}"
+                    try:
+                        with urllib.request.urlopen(
+                            f"{url}/healthcheck", timeout=1.0
+                        ) as response:
+                            if response.status == 200:
+                                _HASH_SERVER_URL = url
+                                return url
+                    except (OSError, urllib.error.URLError):
+                        pass
+            time.sleep(0.1)
+        raise TimeoutError(
+            "hashserver did not become ready within "
+            f"{_HASH_SERVER_STARTUP_TIMEOUT:g} seconds. "
+            f"Log: {_hashserver_log_tail(log_path)}"
+        )
+    except BaseException:
+        try:
+            _stop_hashserver()
+        except BaseException as cleanup_error:
+            print(
+                f"Hashserver cleanup after startup failure raised: {cleanup_error}",
+                file=sys.stderr,
+                flush=True,
+            )
+        raise
+
+
+def _configure_hashserver_clients(url: str) -> None:
+    """Expose only the ephemeral buffer server to this process and its workers."""
+    global _HASH_SERVER_CLIENT_ENV_BEFORE, _HASH_SERVER_CLIENT_ENV_SET
+
+    buffer_client = {"url": url, "remote_url": url, "readonly": False}
+    clients = {"database": [], "buffer": [buffer_client]}
+    env_values = {
+        "SEAMLESS_REMOTE_CLIENTS": json.dumps(clients, separators=(",", ":")),
+        "SEAMLESS_ALLOW_REMOTE_CLIENTS_IN_WORKER": "1",
+    }
+    if _HASH_SERVER_CLIENT_ENV_BEFORE is None:
+        _HASH_SERVER_CLIENT_ENV_BEFORE = {
+            name: os.environ.get(name) for name in _WORKER_REMOTE_CLIENT_ENV
+        }
+    _HASH_SERVER_CLIENT_ENV_SET = env_values
+    os.environ.update(env_values)
+    # This public API configures the client without loading project config or
+    # activating database, jobserver, or daskserver services.
+    from seamless_config import set_remote_clients
+
+    set_remote_clients(clients)
+
+
+def _restore_hashserver_client_env() -> None:
+    global _HASH_SERVER_CLIENT_ENV_BEFORE, _HASH_SERVER_CLIENT_ENV_SET
+    original = _HASH_SERVER_CLIENT_ENV_BEFORE
+    if original is None:
+        return
+    for name, value in original.items():
+        if os.environ.get(name) != _HASH_SERVER_CLIENT_ENV_SET.get(name):
+            continue
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+    _HASH_SERVER_CLIENT_ENV_BEFORE = None
+    _HASH_SERVER_CLIENT_ENV_SET = {}
+
+
+def _stop_stage5_range_reconciler() -> None:
+    global _STAGE5_RANGE_SYNC_STOP, _STAGE5_RANGE_SYNC_THREAD
+    stop = _STAGE5_RANGE_SYNC_STOP
+    thread = _STAGE5_RANGE_SYNC_THREAD
+    _STAGE5_RANGE_SYNC_STOP = None
+    _STAGE5_RANGE_SYNC_THREAD = None
+    if stop is not None:
+        stop.set()
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout=2)
 
 
 def _initial_pdb_code(path: Path) -> str:
@@ -893,20 +1123,25 @@ def _add_stacking_pipeline(
 def build_context() -> Context:
     """Build the durable project Context backing the Vite development proxy."""
     global ctx
-    configure_local_execution()
-    alaric_dir = resolve_alaric_dir()
-    alaric_root = alaric_dir.parent
-    if shareserver.url is None:
-        configured_host = shareserver.host
-        host = os.environ.get("SEAMLESS_SHARE_HOST")
-        if host is None:
-            host = "127.0.0.1" if configured_host == "0.0.0.0" else configured_host
-        port = int(os.environ.get("SEAMLESS_SHARE_PORT", shareserver.port))
-        shareserver.configure(host=host, port=port)
-
-    MOUNT_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    context = Context()
+    context: Context | None = None
     try:
+        _ensure_backend_atexit()
+        hashserver_url = _start_hashserver()
+        _configure_hashserver_clients(hashserver_url)
+        configure_local_execution()
+        alaric_dir = resolve_alaric_dir()
+        alaric_root = alaric_dir.parent
+        if shareserver.url is None:
+            configured_host = shareserver.host
+            host = os.environ.get("SEAMLESS_SHARE_HOST")
+            if host is None:
+                host = "127.0.0.1" if configured_host == "0.0.0.0" else configured_host
+            port = int(os.environ.get("SEAMLESS_SHARE_PORT", shareserver.port))
+            shareserver.configure(host=host, port=port)
+
+        MOUNT_DIRECTORY.mkdir(parents=True, exist_ok=True)
+        context = Context()
+        ctx = context
         context.shares.namespace = "preparic"
 
         context.pdbcode = Cell(celltype="text")
@@ -1458,25 +1693,102 @@ def build_context() -> Context:
         return context
     except BaseException:
         try:
-            context.close()
-        finally:
+            _stop_stage5_range_reconciler()
+        except BaseException as cleanup_error:
+            print(
+                f"Preparic reconciler cleanup after startup failure raised: {cleanup_error}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if context is not None:
+            try:
+                context.close()
+            except BaseException as cleanup_error:
+                print(
+                    f"Preparic Context cleanup after startup failure raised: {cleanup_error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        ctx = None
+        try:
             seamless.close()
+        except BaseException as close_error:
+            print(
+                f"Seamless cleanup after Preparic startup failure raised: {close_error}",
+                file=sys.stderr,
+                flush=True,
+            )
+        try:
+            _stop_hashserver()
+        except BaseException as server_error:
+            print(
+                f"Hashserver cleanup after Preparic startup failure raised: {server_error}",
+                file=sys.stderr,
+                flush=True,
+            )
+        try:
+            _restore_hashserver_client_env()
+        except BaseException as env_error:
+            print(
+                f"Remote client environment restoration raised: {env_error}",
+                file=sys.stderr,
+                flush=True,
+            )
         raise
 
 
 def close_context() -> None:
     """Close the module-level context and its share server."""
-    global ctx, _STAGE5_RANGE_SYNC_STOP, _STAGE5_RANGE_SYNC_THREAD
-    if _STAGE5_RANGE_SYNC_STOP is not None:
-        _STAGE5_RANGE_SYNC_STOP.set()
-    if _STAGE5_RANGE_SYNC_THREAD is not None and _STAGE5_RANGE_SYNC_THREAD is not threading.current_thread():
-        _STAGE5_RANGE_SYNC_THREAD.join(timeout=2)
-    _STAGE5_RANGE_SYNC_STOP = None
-    _STAGE5_RANGE_SYNC_THREAD = None
-    if ctx is not None:
-        ctx.close()
-        ctx = None
-    seamless.close()
+    global ctx, _BACKEND_CLOSING
+    if _BACKEND_CLOSING:
+        return
+    context = ctx
+    if (
+        context is None
+        and _HASH_SERVER_PROCESS is None
+        and _HASH_SERVER_TEMP_DIRECTORY is None
+        and _HASH_SERVER_LOG is None
+        and _HASH_SERVER_CLIENT_ENV_BEFORE is None
+        and _STAGE5_RANGE_SYNC_STOP is None
+        and _STAGE5_RANGE_SYNC_THREAD is None
+    ):
+        return
+    _BACKEND_CLOSING = True
+    ctx = None
+    first_error: BaseException | None = None
+    try:
+        try:
+            _stop_stage5_range_reconciler()
+        except BaseException as exc:
+            first_error = exc
+        if context is not None:
+            try:
+                context.close()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        try:
+            # Flush remote buffers before the owned hashserver is stopped.
+            seamless.close()
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+    finally:
+        try:
+            _stop_hashserver()
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+        finally:
+            try:
+                _restore_hashserver_client_env()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+            finally:
+                _BACKEND_CLOSING = False
+    if first_error is not None:
+        raise first_error
 
 
 def _interactive() -> bool:
@@ -1492,23 +1804,19 @@ def _close_on_sigterm(signum, frame) -> None:
 
     Raising SystemExit instead makes prompt_toolkit (IPython) print a traceback.
     """
-    close_context()
-    signal.signal(signum, signal.SIG_DFL)
-    os.kill(os.getpid(), signum)
+    try:
+        close_context()
+    finally:
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
 
 
 ctx: Context | None = None
 
 
 if __name__ == "__main__":
-    ctx = build_context()
-    # Close when the interpreter exits, e.g. through exit() in a shell. These
-    # run before seamless's own atexit hook, which would warn. They are
-    # registered as objects, since IPython clears this module's globals before
-    # atexit hooks run; both are safe to call again after close_context().
-    atexit.register(seamless.close)
-    atexit.register(ctx.close)
     signal.signal(signal.SIGTERM, _close_on_sigterm)
+    ctx = build_context()
     print(f"PDB code share: {ctx.pdbcode.share.url}")
     print(f"Biounit share: {ctx.biounit.share.url}")
     print(f"CIF share: {ctx.cif.share.url}")
