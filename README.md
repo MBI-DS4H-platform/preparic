@@ -13,8 +13,7 @@ What each stage does, its gates and the files it keeps are described in
 ## Requirements
 
 - The `preparic` conda environment (`environment.yml`) for the app, the
-  backend and the tests. The backend also needs the `seamless` and
-  `seamless_workflow` packages, which `environment.yml` does not install.
+  backend and the tests.
 - An Alaric checkout with its `alaric` conda environment (see Alaric's
   `INSTALLATION.md`). The fitter, reference cutter, best-fit tables,
   gridless energetics and the Gaussian check run in that environment.
@@ -28,11 +27,13 @@ What each stage does, its gates and the files it keeps are described in
 
 ## Start the app
 
-```sh
+```bash
 mamba env create -f environment.yml
 mamba activate preparic
 npm install
 ./preparic-install-hook   # once, in the activated env: puts this directory on PATH on activation
+mamba deactivate
+mamba activate preparic
 preparic-start            # backend + Vite as subprocesses, output to the terminal
 ```
 
