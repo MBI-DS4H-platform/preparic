@@ -47,6 +47,13 @@ bytes. The backend reads the entry id back from the stored CIF (T26), and
 Continue 1→2 requires it to equal the stored code. A failed download changes
 neither. In stages 1–3 the viewer shows the RCSB structure.
 
+Changing the biological assembly clears the browser's stage 2 rows.
+**Continue 1→2** reads the stored rows. If they belong to the selected PDB code
+and assembly, Continue opens them without writing them. Use **Save ranges**
+to activate restored rows for backend computation.
+If the stored rows belong to a different assembly, Continue saves defaults
+for the selected assembly.
+
 ## Stage 2: ranges
 
 Define residue ranges. Range 1 is the RNA; the others are protein ranges.

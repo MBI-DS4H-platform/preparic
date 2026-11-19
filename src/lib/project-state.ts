@@ -324,11 +324,16 @@ function matrixRowsMatchClip(matrix: AnyRecord, snapshot: ProjectSnapshot): bool
 }
 
 /** Check one marker against only the persisted upstream decisions it records. */
+export function rangeBasisMatches(value: unknown, snapshot: ProjectSnapshot): boolean {
+  return isRangeMarker(value)
+    && sameValue(value.basis, { pdbcode: snapshot.pdbcode, biounit: snapshot.biounit });
+}
+
 export function markerMatchesUpstream(kind: MarkerKind, value: unknown, snapshot: ProjectSnapshot): boolean {
   if (!markerIsWellFormed(kind, value) || !isRecord(value)) return false;
   if (kind !== 'best_fit_clip' && value.active !== true) return false;
   if (kind === 'ranges') {
-    return sameValue(value.basis, { pdbcode: snapshot.pdbcode, biounit: snapshot.biounit });
+    return rangeBasisMatches(value, snapshot);
   }
   if (!isRangeMarker(snapshot.ranges) || snapshot.ranges.active !== true) return false;
   if (kind === 'stacking_selection') {

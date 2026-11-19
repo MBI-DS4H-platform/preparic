@@ -12,6 +12,8 @@ export interface AppState {
   error: string;
   chains: ChainInfo[];
   rows: RangeRow[];
+  assemblyChangedInStage1: boolean;
+  reviewingSavedRanges: boolean;
   activeCell: ActiveCell | null;
   otherChainsMode: OtherChainsMode;
   showSidechainSticks: boolean;
@@ -35,6 +37,8 @@ export const appState = $state<AppState>({
   error: '',
   chains: [],
   rows: [],
+  assemblyChangedInStage1: false,
+  reviewingSavedRanges: false,
   activeCell: null,
   otherChainsMode: 'transparent',
   showSidechainSticks: false,
@@ -83,5 +87,7 @@ export function clearStructureDependentState(): void {
 
 export function returnToStage1(): void {
   clearStructureDependentState();
+  appState.assemblyChangedInStage1 = false;
+  appState.reviewingSavedRanges = false;
   appState.stage = 1;
 }
