@@ -1639,6 +1639,7 @@ def build_context() -> Context:
         context.export_tree_transformer.celltypes.validated_energies = "plain"
         context.export_tree_transformer.celltypes.result = "folder"
         context.export_tree = context.export_tree_transformer.result
+        context.export_tree.mount(MOUNT_DIRECTORY / "export-tree", mode="w")
         context.shares.add_download(
             {"alaric_project": "export_tree"}, path="export.zip", format="zip"
         )
@@ -1680,7 +1681,6 @@ def build_context() -> Context:
         context.gaussian_validation.share()
         context.gaussian_scores.share()
         context.structure_id_result.share(path="structure_id")
-        context.mounts.sync(timeout=60)
         global _STAGE5_RANGE_SYNC_STOP, _STAGE5_RANGE_SYNC_THREAD
         if _STAGE5_RANGE_SYNC_STOP is not None:
             _STAGE5_RANGE_SYNC_STOP.set()
