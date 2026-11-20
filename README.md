@@ -41,6 +41,7 @@ Launcher options:
 ```sh
 preparic-start --alaric-dir PATH  # Alaric's alaric/ package directory
 preparic-start --force    # also force Vite to rebuild optimized dependencies
+preparic-start --collaborative  # (or --collab, --co) Vite listens on 0.0.0.0, so others open http://<this machine's IP or hostname>:5173/
 preparic-start --log      # output of both servers goes to preparic.log (--log FILE for another file)
 preparic-start --log --shell  # only Vite logs; the backend runs in `ipython -i` (else `python -i`) on the terminal, with `ctx` available. Exit the shell to stop both
 preparic-stop             # stops any running preparic-start, and with it both servers
@@ -55,6 +56,13 @@ declared dependency lists inside Seamless transformations.
 
 Use `--force` when Vite's optimized dependency cache is stale or inconsistent.
 `npm run dev` alone serves only the frontend, without a backend.
+
+With `--collaborative`, everyone who opens the app works on the same project:
+the backend's state is shared by all visitors. There is no authentication;
+anyone who can reach port 5173 can use and change the project, so use it only
+on a network you trust. Others open it by this machine's IP address or
+hostname; in this mode Vite accepts any hostname. A production deployment (for
+example through Cloudless) is set up differently.
 
 For a quick stage-2 test, open the app with `?pdb=1B7F&continue=1`; it loads
 the first biological unit and advances after the viewer is ready. URL
