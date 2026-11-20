@@ -8,6 +8,26 @@ import pytest
 import backend
 
 
+@pytest.fixture(autouse=True)
+def isolated_hashserver_state(monkeypatch):
+    """Give each test its own backend hashserver state.
+
+    Earlier tests in the session close only their Context, so the backend's
+    hashserver and client configuration stay in use by later tests. Without
+    this, these tests would adopt that hashserver, stop it, and restore the
+    client environment from before it started.
+    """
+    for name in (
+        "_HASH_SERVER_PROCESS",
+        "_HASH_SERVER_TEMP_DIRECTORY",
+        "_HASH_SERVER_LOG",
+        "_HASH_SERVER_URL",
+        "_HASH_SERVER_CLIENT_ENV_BEFORE",
+    ):
+        monkeypatch.setattr(backend, name, None)
+    monkeypatch.setattr(backend, "_HASH_SERVER_CLIENT_ENV_SET", {})
+
+
 def test_close_context_stops_hashserver_and_removes_its_temporary_directory(
     monkeypatch,
 ):
