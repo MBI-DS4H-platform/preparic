@@ -21,6 +21,11 @@ stored decisions, never from whether a computation has finished:
 | 5 | interaction matrix (`interaction-matrix.json`) |
 | 6 | Gaussian classes (`gaussian-classes.json`) |
 
+The button that activates the next stage's decision is labelled **Continue**
+in stage 1, **Complete** in stage 2 and **Continue to best fits**, **Continue
+to energetics** and **Continue to Gaussian filters** in stages 3 to 5. This
+document calls all of them Continue.
+
 Each of these decisions carries a basis (the PDB code and the decisions it
 was made for) and an `active` flag. **Continue** checks the stage's gate
 again immediately before it writes, writes any prerequisite decision first,
@@ -257,10 +262,12 @@ reference and prepared range files, schema-1 constraints and energy
 thresholds, kept reference/best-fit fragments, and a manifest with the
 snapshot digest and generator inventory. The other folders catalogue
 alternative anchor, grow, merge and common-conformer gens for fixed and
-unfixed runs. They are not all one runnable project: select compatible gens,
-then move the chosen actions from their nested `gen-*` folders into the
-project root alongside `DATA/`. The catalogue itself is ignored by Alaric's
-project loader until those action directories are moved. Choose only one
+unfixed runs. They are not all one runnable project, and Alaric is not run inside
+`alaric_project/`. Each Alaric run is a separate directory that links to
+`alaric_project/DATA`. You select compatible gens and copy the action
+directories from their nested `gen-*` folders into that run directory, with
+`alaric-copy`.
+Alaric's project loader ignores the nested catalogue. Choose only one
 conflicting alternative for a pool name; the exporter does not choose merge
 locations or remove run-final dead ends. There is no bundled README.
 
