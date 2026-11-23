@@ -38,6 +38,9 @@ From the `preparic` repository root:
 ```bash
 conda env create -f environment.yml
 conda activate preparic
+./preparic-install-hook
+conda deactivate
+conda activate preparic
 ```
 
 `mamba env create -f environment.yml` does the same.
