@@ -36,6 +36,9 @@ def _ranges_to_pdb(cif: str, ranges: dict) -> list[str]:
 
     parser = MMCIFParser(auth_chains=False, auth_residues=False, QUIET=True)
     structure = parser.get_structure("cif", StringIO(cif))
+    # Match the first model displayed in the viewer.
+    for model in list(structure)[1:]:
+        structure.detach_child(model.id)
     cif_dictionary = parser._mmcif_dict
     # MMCIFParser keeps the parsed categories here; reuse them instead of
     # tokenizing a potentially large CIF a second time.

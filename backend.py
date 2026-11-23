@@ -73,10 +73,6 @@ _STAGE5_RANGE_SYNC_THREAD: threading.Thread | None = None
 
 _HASH_SERVER_STARTUP_TIMEOUT = 30.0
 _HASH_SERVER_STOP_TIMEOUT = 10.0
-_WORKER_REMOTE_CLIENT_ENV = (
-    "SEAMLESS_REMOTE_CLIENTS",
-    "SEAMLESS_ALLOW_REMOTE_CLIENTS_IN_WORKER",
-)
 
 _RANGE_KEYS = {"chain", "start", "end"}
 _MARKER_KEYS = {
@@ -525,21 +521,26 @@ def _start_hashserver() -> str:
         raise
 
 
-def _configure_hashserver_clients(url: str) -> None:
-    """Expose only the ephemeral buffer server to this process and its workers."""
+def _configure_hashserver_clients(url: str | None) -> None:
+    """Configure this process and its workers with the selected buffer cache."""
     global _HASH_SERVER_CLIENT_ENV_BEFORE, _HASH_SERVER_CLIENT_ENV_SET
 
-    buffer_client = {"url": url, "remote_url": url, "readonly": False}
-    clients = {"database": [], "buffer": [buffer_client]}
+    buffer_clients = []
+    if url is not None:
+        buffer_clients.append({"url": url, "remote_url": url, "readonly": False})
+    clients = {"database": [], "buffer": buffer_clients}
     env_values = {
         "SEAMLESS_REMOTE_CLIENTS": json.dumps(clients, separators=(",", ":")),
-        "SEAMLESS_ALLOW_REMOTE_CLIENTS_IN_WORKER": "1",
+        "SEAMLESS_ALLOW_REMOTE_CLIENTS_IN_WORKER": "1" if url is not None else "0",
     }
+    if url is None:
+        # Inherited SEAMLESS_CACHE overrides the explicit client list in workers.
+        env_values["SEAMLESS_CACHE"] = ""
     if _HASH_SERVER_CLIENT_ENV_BEFORE is None:
-        _HASH_SERVER_CLIENT_ENV_BEFORE = {
-            name: os.environ.get(name) for name in _WORKER_REMOTE_CLIENT_ENV
-        }
-    _HASH_SERVER_CLIENT_ENV_SET = env_values
+        _HASH_SERVER_CLIENT_ENV_BEFORE = {}
+    for name in env_values:
+        _HASH_SERVER_CLIENT_ENV_BEFORE.setdefault(name, os.environ.get(name))
+    _HASH_SERVER_CLIENT_ENV_SET.update(env_values)
     os.environ.update(env_values)
     # This public API configures the client without loading project config or
     # activating database, jobserver, or daskserver services.
@@ -1126,7 +1127,9 @@ def build_context() -> Context:
     context: Context | None = None
     try:
         _ensure_backend_atexit()
-        hashserver_url = _start_hashserver()
+        hashserver_url = None
+        if os.environ.get("PREPARIC_NO_DISK_CACHE") != "1":
+            hashserver_url = _start_hashserver()
         _configure_hashserver_clients(hashserver_url)
         configure_local_execution()
         alaric_dir = resolve_alaric_dir()
@@ -1636,6 +1639,7 @@ def build_context() -> Context:
         context.export_tree_transformer.celltypes.validated_energies = "plain"
         context.export_tree_transformer.celltypes.result = "folder"
         context.export_tree = context.export_tree_transformer.result
+        context.export_tree.mount(MOUNT_DIRECTORY / "export-tree", mode="w")
         context.shares.add_download(
             {"alaric_project": "export_tree"}, path="export.zip", format="zip"
         )
@@ -1677,7 +1681,6 @@ def build_context() -> Context:
         context.gaussian_validation.share()
         context.gaussian_scores.share()
         context.structure_id_result.share(path="structure_id")
-        context.mounts.sync(timeout=60)
         global _STAGE5_RANGE_SYNC_STOP, _STAGE5_RANGE_SYNC_THREAD
         if _STAGE5_RANGE_SYNC_STOP is not None:
             _STAGE5_RANGE_SYNC_STOP.set()

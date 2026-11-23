@@ -26,6 +26,28 @@ def test_extracts_rna_then_proteins_in_range_order(cif_text, range_specs, expect
     ]
 
 
+def test_extracts_ranges_only_from_first_model(cif_text, range_specs, expected_pdbs):
+    data = MMCIF2Dict(StringIO(cif_text))
+    model_field = "_atom_site.pdbx_PDB_model_num"
+    x_field = "_atom_site.Cartn_x"
+    atom_count = len(data[model_field])
+    second_model_x = [str(float(x) + 100) for x in data[x_field]]
+
+    for field in data:
+        if field.startswith("_atom_site."):
+            data[field] *= 2
+    data["_atom_site.id"] = [str(i) for i in range(1, 2 * atom_count + 1)]
+    data[model_field] = ["7"] * atom_count + ["3"] * atom_count
+    data[x_field][atom_count:] = second_model_x
+
+    writer = MMCIFIO()
+    writer.set_dict(data)
+    output = StringIO()
+    writer.save(output)
+
+    assert _ranges_to_pdb(output.getvalue(), range_specs) == expected_pdbs
+
+
 def test_original_deployment_selections(cif_text):
     specs = yaml.safe_load((DATA / "deployment-ranges.yaml").read_text())
     result = _ranges_to_pdb(cif_text, specs)

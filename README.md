@@ -14,6 +14,7 @@ What each stage does, its gates and the files it keeps are described in
 
 - The `preparic` conda environment (`environment.yml`) for the app, the
   backend and the tests.
+  backend and the tests.
 - An Alaric checkout with its `alaric` conda environment (see Alaric's
   `INSTALLATION.md`). The fitter, reference cutter, best-fit tables,
   gridless energetics and the Gaussian check run in that environment.

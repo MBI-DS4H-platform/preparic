@@ -52,6 +52,16 @@ def parse_args() -> argparse.Namespace:
         help="force Vite to rebuild its optimized dependencies",
     )
     parser.add_argument(
+        "--collaborative",
+        "--collab",
+        "--co",
+        action="store_true",
+        help="Vite listens on 0.0.0.0 instead of localhost, so others on the "
+        "network can open Preparic at this machine's IP address or hostname. "
+        "There is no authentication: whoever reaches the port can use and "
+        "change the project",
+    )
+    parser.add_argument(
         "--alaric-dir",
         type=Path,
         metavar="PATH",
@@ -145,7 +155,11 @@ def main() -> int:
     vite_command = [npm, "run", "dev"]
     if args.force:
         vite_command.extend(["--", "--force"])
-    vite = (vite_command, detached)
+    vite_env = child_env.copy()
+    if args.collaborative:
+        # Read by vite.config.ts.
+        vite_env["PREPARIC_COLLABORATIVE"] = "1"
+    vite = (vite_command, dict(detached, env=vite_env))
     if args.shell:
         servers = {"vite": vite, "backend": (shell_command(), dict(cwd=PROJECT_ROOT, env=child_env))}
     else:
@@ -163,6 +177,11 @@ def main() -> int:
     tty_state = termios.tcgetattr(sys.stdin) if args.shell else None
     if log is not None:
         say(f"logging {'Vite' if args.shell else 'both servers'} to {args.log.resolve()}")
+    if args.collaborative:
+        say(
+            "collaborative: Vite listens on 0.0.0.0; anyone who can reach its port "
+            "can use and change this project, without authentication"
+        )
     procs: dict[str, subprocess.Popen] = {}
     status = 0
     try:

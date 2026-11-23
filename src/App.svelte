@@ -8,13 +8,13 @@
   import Stage6Gaussian from './components/Stage6Gaussian.svelte';
   import Viewer from './components/Viewer.svelte';
   import { clearStructureDependentState, enterStage2, enterStage3, appState, invalidateStackingState, returnToStage1, returnToStage2 } from './lib/state.svelte';
-  import { restoreCurrentStackings, cancelSharedCifWrite, deactivateProjectDecisionAndWait, prepareProjectTransition, readSharedCif, resetStage4ActiveNucleotide, seamlessState, setEnergyThresholdEditsAwaited, setProjectDecisionAwaited, setSharedBiounitIndex, setSharedCif, setSharedPdbCode, setSharedRangeRows, setSharedStackingSelectionAndWait, waitForShareWrite } from './lib/seamless.svelte';
+  import { restoreCurrentStackings, cancelSharedCifWrite, deactivateProjectDecisionAndWait, prepareProjectTransition, readSharedCif, readSharedRanges, resetStage4ActiveNucleotide, seamlessState, setEnergyThresholdEditsAwaited, setProjectDecisionAwaited, setSharedBiounitIndex, setSharedCif, setSharedPdbCode, setSharedRangeRows, setSharedStackingSelectionAndWait, waitForShareWrite } from './lib/seamless.svelte';
   import { findChain } from './lib/chains';
   import { cloneRangeRows, updateRow, validateRows } from './lib/ranges';
   import { mergeStackings, observeStage2RangeRows, resolveSelectedStackings, resolveStackingParticipants, stackingRowsAtResidue } from './lib/stackings';
 import { activeDinucleotidePairs, canContinueStage4, fragmentIdentityKey, canEnterStage4, clipForSelectedAnchors, makeThresholdSkeleton, selectedCandidateGroups, validClipForCandidates, validateThresholdEdits } from './lib/stage4';
   import { adaptInteractionMatrix, candidateAnchors, makeInteractionMatrix, recomputeInteractionMatrix, reconcileEnergyThresholdEdits, stage5CanAdvance, stage5RangePalette, stage5Rows, type Stage5S14 } from './lib/stage5';
-  import { markerIsWellFormed } from './lib/project-state';
+  import { markerIsWellFormed, rangeBasisMatches } from './lib/project-state';
   import { classMarkerForContinue, selectedGaussianKeys } from './lib/stage6';
   import type { ChainKey, HoverInfo, PickInfo, RangeRow, RangeSpec } from './lib/types';
   import type { MolViewer } from './lib/molstar/viewer';
@@ -90,6 +90,7 @@ import { activeDinucleotidePairs, canContinueStage4, fragmentIdentityKey, canEnt
       appState.assemblyId = '';
       appState.structureReady = false;
       clearStructureDependentState();
+      appState.assemblyChangedInStage1 = true;
     }
   });
 
@@ -99,7 +100,7 @@ import { activeDinucleotidePairs, canContinueStage4, fragmentIdentityKey, canEnt
   });
 
   $effect(() => {
-    if (appState.stage < 2 || !seamlessState.rangesReady) return;
+    if (appState.stage < 2 || appState.reviewingSavedRanges || !seamlessState.ready || !seamlessState.rangesReady) return;
     if (seamlessState.rangeRevision > appliedRangeRevision) {
       appliedRangeRevision = seamlessState.rangeRevision;
       appState.rows = cloneRangeRows(seamlessState.rangeRows);
@@ -297,21 +298,21 @@ import { activeDinucleotidePairs, canContinueStage4, fragmentIdentityKey, canEnt
       } else if (cell.column !== 'chain') {
         appState.rows = updateRow(appState.rows, row.id, { [cell.column]: String(pick.labelSeqId) });
       }
-      setSharedRangeRows(appState.rows);
+      if (!appState.reviewingSavedRanges) setSharedRangeRows(appState.rows);
       return;
     }
     if (cell.column === 'chain') {
       const chain = findChain(appState.chains, pick.labelAsymId, pick.instanceId);
       if (chain) {
         appState.rows = updateRow(appState.rows, row.id, { chain: chain.name });
-        setSharedRangeRows(appState.rows);
+        if (!appState.reviewingSavedRanges) setSharedRangeRows(appState.rows);
       }
       return;
     }
     const focusChain = appState.chains.find(chain => chain.name === row.chain);
     if (!focusChain || focusChain.labelAsymId !== pick.labelAsymId || focusChain.instanceId !== pick.instanceId) return;
     appState.rows = updateRow(appState.rows, row.id, { [cell.column]: String(pick.labelSeqId) });
-    setSharedRangeRows(appState.rows);
+    if (!appState.reviewingSavedRanges) setSharedRangeRows(appState.rows);
   }
 
   async function proceedToRanges() {
@@ -327,30 +328,53 @@ import { activeDinucleotidePairs, canContinueStage4, fragmentIdentityKey, canEnt
       return;
     }
     appState.chains = chains;
-    if (!appState.rows.length && seamlessState.rangeRows.length > 0) {
-      appState.rows = cloneRangeRows(seamlessState.rangeRows);
+    const rereadRanges = appState.assemblyChangedInStage1;
+    const biounit = appState.biounitIndex;
+    const pdbCode = seamlessState.pdbCode;
+    const structureIsCurrent = () => seamlessState.ready && seamlessState.structureIdReady
+      && seamlessState.structureId === pdbCode && seamlessState.pdbCode === pdbCode
+      && pdbCode === appState.pdbId.trim().toUpperCase()
+      && seamlessState.biounitIndex === biounit && appState.biounitIndex === biounit
+      && !appState.loading && appState.structureReady;
+    if (rereadRanges) {
+      try {
+        if (!await waitForShareWrite('biounit')) throw new Error('Assembly write was refused');
+        await readSharedRanges();
+      } catch {
+        appState.error = 'Could not confirm the saved ranges for this assembly. Try Continue again.';
+        return;
+      }
+      if (!structureIsCurrent()) {
+        appState.error = 'The shared structure changed while loading its ranges. Check it and try again.';
+        return;
+      }
     }
-    if (!appState.rows.length) {
-      const firstChain = chains[0];
-      appState.rows = [{ id: `range-start-${Date.now()}`, alwaysVisible: false, chain: firstChain.name,
-        start: String(firstChain.seqMin), end: String(firstChain.seqMax) }];
-    }
-    if (seamlessState.projectStage === 1) {
-      if (!await prepareProjectTransition(2)) {
+    const snapshot = seamlessState.projectSnapshot;
+    const restoreSavedRanges = rereadRanges && rangeBasisMatches(snapshot.ranges, snapshot);
+    if (seamlessState.projectStage === 1 && !restoreSavedRanges) {
+      if (!await waitForShareWrite('biounit') || !await prepareProjectTransition(2)) {
         appState.error = 'The project changed while preparing this transition. Review it and try again.';
         return;
       }
-      if (!seamlessState.ready || !seamlessState.structureIdReady
-        || seamlessState.structureId !== seamlessState.pdbCode
-        || seamlessState.pdbCode !== appState.pdbId.trim().toUpperCase()) {
+      if (!structureIsCurrent()) {
         appState.error = 'The shared structure changed while preparing this transition. Check it and try again.';
         return;
       }
-      if (!setSharedRangeRows(appState.rows) || !await waitForShareWrite('ranges')) {
+      let rows = rangeBasisMatches(snapshot.ranges, snapshot) ? seamlessState.rangeRows : [];
+      if (!rows.length) {
+        const firstChain = chains[0];
+        let end = firstChain.seqMin;
+        while (end < firstChain.seqMax && firstChain.seqIds.has(end + 1)) end += 1;
+        rows = [{ id: `range-start-${Date.now()}`, alwaysVisible: false, chain: firstChain.name,
+          start: String(firstChain.seqMin), end: String(end) }];
+      }
+      if (!setSharedRangeRows(rows) || !await waitForShareWrite('ranges')) {
         appState.error = 'Save a complete range decision before continuing.';
         return;
       }
     }
+    appState.reviewingSavedRanges = restoreSavedRanges && seamlessState.projectStage === 1;
+    appState.assemblyChangedInStage1 = false;
     appliedRangeRevision = seamlessState.rangeRevision;
     enterStage2(seamlessState.rangesReady ? seamlessState.rangeRows : undefined);
   }
@@ -370,6 +394,15 @@ import { activeDinucleotidePairs, canContinueStage4, fragmentIdentityKey, canEnt
     }
     returnToStage1();
     void viewer?.render({ focus: null });
+  }
+
+  async function saveRestoredRanges(): Promise<void> {
+    const snapshot = seamlessState.projectSnapshot;
+    if (!await prepareProjectTransition(2) || !appState.reviewingSavedRanges
+      || !seamlessState.ready || !rangeBasisMatches(snapshot.ranges, snapshot)
+      || !setSharedRangeRows(appState.rows) || !await waitForShareWrite('ranges')) {
+      seamlessState.rangeError ||= 'The ranges could not be saved. Review them and try again.';
+    }
   }
 
   async function complete(): Promise<void> {
@@ -898,7 +931,7 @@ import { activeDinucleotidePairs, canContinueStage4, fragmentIdentityKey, canEnt
       {#if appState.stage === 1}
         <Stage1Structure {viewer} startupPdbId={startupPdbIdForRestore} autoContinue={false} onContinue={proceedToRanges} />
       {:else if appState.stage === 2}
-        <Stage2Ranges onBack={goBack} onComplete={complete} />
+        <Stage2Ranges onBack={goBack} onComplete={complete} onSave={saveRestoredRanges} />
       {:else if appState.stage === 3}
         <Stage3Stackings onBack={backToRanges} onContinue={continueToStage4} />
       {:else if appState.stage === 4}

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { appState } from '../lib/state.svelte';
+  import { appState, clearStructureDependentState } from '../lib/state.svelte';
   import { cancelSharedCifWrite, captureSharedStructureTarget, commitSharedStructure, readSharedCif, seamlessState, setSharedBiounitIndex, setSharedPdbCode, sharedStructureTargetIsCurrent } from '../lib/seamless.svelte';
   import type { MolViewer } from '../lib/molstar/viewer';
 
@@ -156,12 +156,17 @@
     try {
       await viewer?.showAssembly(id, isCurrentAssembly, () => {
         if (!isCurrentAssembly() || !setSharedBiounitIndex(selectedIndex)) return false;
+        if (selectedIndex !== appState.biounitIndex) {
+          clearStructureDependentState();
+          appState.assemblyChangedInStage1 = true;
+        }
         appState.assemblyId = id;
         appState.biounitIndex = selectedIndex;
         appState.structureReady = true;
         committed = true;
         return true;
       });
+      if (committed && viewer) appState.chains = viewer.listChains();
       if (!committed && request === requestId && isCurrentAssembly()) {
         appState.error = 'The selected biological assembly could not be committed.';
       }

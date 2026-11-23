@@ -10,7 +10,7 @@
   let editing: ActiveCell | null = $state(null);
 
   function commitRows() {
-    if (appState.stage === 2) setSharedRangeRows(appState.rows);
+    if (appState.stage === 2 && !appState.reviewingSavedRanges) setSharedRangeRows(appState.rows);
   }
 
   function activate(next: ActiveCell | null) {

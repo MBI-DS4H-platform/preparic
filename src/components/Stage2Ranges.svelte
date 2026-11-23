@@ -4,7 +4,7 @@
   import { normalizeRow, validateRows } from '../lib/ranges';
   import RangeTable from './RangeTable.svelte';
 
-  let { onBack, onComplete }: { onBack: () => void; onComplete: () => void } = $props();
+  let { onBack, onComplete, onSave }: { onBack: () => void; onComplete: () => void; onSave: () => void } = $props();
   let showAllErrors = $state(false);
   let issues = $derived(validateRows(appState.rows, appState.chains, showAllErrors));
 
@@ -76,6 +76,10 @@
 
   <div class="stage-footer stage-footer-split">
     <button class="button button-secondary" onclick={onBack}><span aria-hidden="true">←</span> Back</button>
-    <button class="button button-primary" onclick={finish} disabled={!canComplete}>Complete <span aria-hidden="true">✓</span></button>
+    {#if appState.reviewingSavedRanges}
+      <button class="button button-primary" onclick={onSave} disabled={!seamlessState.ready || validateRows(appState.rows, appState.chains).length > 0}>Save ranges</button>
+    {:else}
+      <button class="button button-primary" onclick={finish} disabled={!canComplete}>Complete <span aria-hidden="true">✓</span></button>
+    {/if}
   </div>
 </section>

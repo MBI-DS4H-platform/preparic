@@ -16,4 +16,4 @@ dependencies:
   - pytest
   - pip
   - pip:
-      - seamless-suite>=1.5a
+      - seamless-suite>=1.5.1

@@ -302,7 +302,13 @@ function currentSnapshot(): ProjectSnapshot {
 
 function refreshProjectStage(): void {
   seamlessState.projectStage = deriveProjectStage(currentSnapshot());
-  appState.stage = seamlessState.projectStage;
+  // Reconnect can temporarily leave the range or assembly share unread.
+  if (seamlessState.ready && appState.reviewingSavedRanges) {
+    const snapshot = currentSnapshot();
+    appState.reviewingSavedRanges = seamlessState.projectStage === 1
+      && snapshot.pdbcode === appState.pdbId && snapshot.biounit === appState.biounitIndex;
+  }
+  appState.stage = appState.reviewingSavedRanges ? 2 : seamlessState.projectStage;
   refreshVisibleErrors();
   cancelStaleDebouncedProjectDecisions();
 }
@@ -1019,7 +1025,9 @@ function receiveRanges(value: SharedValue): void {
     rangeSignature = signature;
     seamlessState.rangeRows = rows;
     seamlessState.rangeRevision += 1;
-    if (seamlessState.ready && appState.stage === 2) appState.rows = rows.map(row => ({ ...row }));
+    if (seamlessState.ready && appState.stage === 2 && !appState.reviewingSavedRanges) {
+      appState.rows = rows.map(row => ({ ...row }));
+    }
   }
   updateReady();
 }
@@ -1632,6 +1640,10 @@ export function setSharedCif(cif: string): void {
 }
 
 /** Explicitly read the file-authoritative CIF; dotted shares are not auto-read. */
+export async function readSharedRanges(): Promise<void> {
+  await readShareFresh('ranges');
+}
+
 export async function readSharedCif(): Promise<string> {
   const cell = client?.['cif.cif'];
   if (!cell) throw new Error('The shared CIF cell is not available.');
