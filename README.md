@@ -18,18 +18,32 @@ The frontend is Svelte 5 + Mol*; the backend is a Seamless `Context`
 What each stage does, its gates and the files it keeps are described in
 [STAGES.md](STAGES.md).
 
-## Installation
+## Requirements
 
-See [INSTALLATION.md](INSTALLATION.md). Preparic needs a working Alaric
-installation first (its `alaric` conda environment, `~/.alaric/fraglib.yaml`
-and the Gaussian stacking-filter caches), the `preparic` conda environment
-from `environment.yml`, and a browser with WebGL enabled.
+- The `preparic` conda environment (`environment.yml`) for the app, the
+  backend and the tests.
+- An Alaric checkout with its `alaric` conda environment (see Alaric's
+  `INSTALLATION.md`). The fitter, reference cutter, best-fit tables,
+  gridless energetics and the Gaussian check run in that environment.
+- `~/.alaric/fraglib.yaml`, pointing at the fragment library.
+- The twelve Gaussian stacking-filter caches, installed once per Alaric
+  checkout under `precomputed-filters/gaussian/` (Alaric
+  `documents/gaussian-filter.md` §6). A missing or corrupt cache is reported as
+  an installation error in stage 6 that names the generator command; preparic
+  never builds the caches itself.
+- A browser with WebGL enabled.
 
 ## Start the app
 
 With the `preparic` environment active (see [INSTALLATION.md](INSTALLATION.md)):
 
-```sh
+```bash
+mamba env create -f environment.yml
+mamba activate preparic
+npm install
+./preparic-install-hook   # once, in the activated env: puts this directory on PATH on activation
+mamba deactivate
+mamba activate preparic
 preparic-start            # backend + Vite as subprocesses, output to the terminal
 ```
 
